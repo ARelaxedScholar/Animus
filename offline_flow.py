@@ -6,6 +6,7 @@ from nltk.tokenize import sent_tokenize
 from pocketflow import AsyncParallelBatchNode, AsyncFlow, Node, Flow
 from eigen_client.client import Client
 from eigen_client.data_types import Document
+from dotenv import dotenv_values
 
 RAW_TEXT_EXTENSIONS = ("md", "txt")
 
@@ -94,20 +95,21 @@ class VectorStoreWriter(Node):
 nltk.download("punkt")
 nltk.download("punkt_tab")
 # Testing the logic
+config = dotenv_values()
 node = SentenceSplitter()
 node.params["filename"] = "frankenstein.txt"
 
-node2 = DocumentMaker()
+node2 = DocumentMaker(max_retries=10, wait=3)
 
 node3 = VectorStoreWriter()
 node >> node2 >> node3
 flow = Flow(start=node)
+flow.set_params({"filename": "frankenstein.txt"})
 
 client = Client(
     url="http://localhost:8080",
-    api_key="eigendb-***",
+    api_key=config.get("EIGENDB_API_KEY"),
 )
-
 shared = {"client" : client}
 
 flow.run(shared)

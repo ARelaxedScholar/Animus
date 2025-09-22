@@ -28,8 +28,8 @@ def semantic_chunking(sentences):
     chunk_number = 0
     prompt = """You are a SEMANTIC BOUNDARY DETECTOR.
                 When given to strings, your ONLY response is either:
-                True: These two strings together form ONE coherent thought 
-                False: These two strings represent TWO distinct ideas.
+                true: These two strings together form ONE coherent thought 
+                false: These two strings represent TWO distinct ideas.
 
                 You will be given a group of sentences (might be just one) along
                 with one new sentence.
@@ -38,11 +38,35 @@ def semantic_chunking(sentences):
                 And False otherwise.
 
                 Your output will follow a JSON format as follows:
-              
+                
+                ```json 
                 {
-                    "response": True/False,
+                    "response": true/false,
                     "explanation": The why you think these two strings do or don't belong together
-                }"""
+                }
+                ```
+
+                Example 1:
+
+                { "curr_chunk": "I like cheese on pizza. I like dairy in general.",
+                  "new_sentence": "I do not like people"}
+
+                Your response:
+                {
+                    "response": false,
+                    "explanation": "The first chunk talks about the user's general love for dairy, while the new sentence is about their general distaste of people."
+                }
+
+                Example 2:
+                { "curr_chunk": "I am a man of big ideals. I want to conquer the earth. I want to discover new horizons.",
+                  "new_sentence": "I want to have a beautiful wife who shares my ideals."}
+
+                Your response:
+                {
+                    "response": true,
+                    "explanation": "The curr_chunk reflects the general ambitions of a man, while the new_sentence is about another ambition of theirs."
+                }
+                """
     if not sentences:
         raise ValueError("Passed empty list to semantic_chunking")
     
