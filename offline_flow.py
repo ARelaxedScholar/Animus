@@ -1,8 +1,10 @@
+from os import wait
 from utility import extract_json_from_codeblock, call_llm, semantic_chunking
 from io import UnsupportedOperation
 import nltk
 from nltk.tokenize import sent_tokenize
-from pocketflow import AsyncParallelBatchNode, AsyncFlow, Node
+from pocketflow import AsyncParallelBatchNode, AsyncFlow, Node, Flow
+from eigen_client.client import Client
 from eigen_client.data_types import Document
 
 RAW_TEXT_EXTENSIONS = ("md", "txt")
@@ -68,25 +70,44 @@ class DocumentMaker(Node):
     def post(self, shared, prep_res, exec_res):
         shared["documents"] = exec_res
 
-        
-class Embedder(Node):
-    def prep(self, shared):
-        return shared["documents"]
 
 class VectorStoreWriter(Node):
-    pass
+    def prep(self, shared):
+        return shared["client"], shared["documents"]
+
+    def exec(self, prep_res):
+        client, documents = prep_res
+        if not documents:
+            raise ValueException("VectorStoreWriter received empty documents list")
+
+        filename = documents[0].metadata.get("filename")
+        index = client.create_index_from_model(
+            index_name=filename,
+            model_name="mxbai-embed-large:335m",
+            model_provider="ollama",
+        )
+        index.upsert_docs(documents)
+
 
 
 # Downloading the punkt stuff if needed
 nltk.download("punkt")
 nltk.download("punkt_tab")
 # Testing the logic
-x = {}
 node = SentenceSplitter()
-node2 = DocumentMaker() 
-node.params["filename"] = "vectors.pdf"
-node.run(x)
-node2.run(x)
+node.params["filename"] = "frankenstein.txt"
 
-print(x["documents"])
+node2 = DocumentMaker()
 
+node3 = VectorStoreWriter()
+node >> node2 >> node3
+flow = Flow(start=node)
+
+client = Client(
+    url="http://localhost:8080",
+    api_key="eigendb-***",
+)
+
+shared = {"client" : client}
+
+flow.run(shared)
