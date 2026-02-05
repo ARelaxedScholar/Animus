@@ -183,3 +183,66 @@ pub struct Chapter {
     pub title: String,
     pub timestamp_seconds: u32,
 }
+
+// ============================================================================
+// Script Self-Improvement Types
+// ============================================================================
+
+/// Evaluation of a single script by the judge LLM
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptEvaluation {
+    pub overall_score: f32,
+    pub criteria: CriteriaScores,
+    pub strengths: Vec<String>,
+    pub weaknesses: Vec<String>,
+    pub ai_telltale_signs: Vec<String>,
+    pub specific_improvements: Vec<SpecificImprovement>,
+}
+
+/// Individual criterion scores (1-10 scale)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CriteriaScores {
+    /// Does the first 30 seconds create an irresistible urge to keep watching?
+    pub hook_strength: CriterionScore,
+    /// Does the rhythm vary? Are there retention hooks every 2-3 minutes?
+    pub pacing_retention: CriterionScore,
+    /// Are sources woven naturally into the narrative?
+    pub wisdom_integration: CriterionScore,
+    /// Does this sound like a real person sharing hard-won insights?
+    pub authenticity: CriterionScore,
+    /// Is the word count close to target?
+    pub duration_accuracy: CriterionScore,
+    /// Does the closing feel earned?
+    pub cta_quality: CriterionScore,
+    /// Absence of AI telltale signs
+    pub ai_detection: CriterionScore,
+}
+
+/// Score for a single criterion
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CriterionScore {
+    pub score: f32,
+    pub notes: String,
+}
+
+/// A specific improvement suggestion with location
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpecificImprovement {
+    /// Where in the script (e.g., "Section 2, paragraph 3")
+    pub location: String,
+    /// What's wrong
+    pub issue: String,
+    /// How to fix it
+    pub suggestion: String,
+}
+
+/// A script candidate with its evaluation
+#[derive(Debug, Clone)]
+pub struct ScoredScript {
+    pub script: Script,
+    pub evaluation: ScriptEvaluation,
+    pub iteration: u32,
+    pub candidate_index: Option<u32>,
+    /// Database ID of the evaluation record (for marking as selected)
+    pub evaluation_id: Option<i32>,
+}

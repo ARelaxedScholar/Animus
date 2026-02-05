@@ -90,6 +90,7 @@ impl VideoProductionFlow {
         ));
         let script_writer_node = AsyncNode::new(ScriptWriterLogic::new(
             script_writer_config,
+            settings.script_improvement.clone(),
             llm_client.clone(),
             db_pool.clone(),
         ));

@@ -13,6 +13,7 @@ pub struct Settings {
     pub youtube: YouTubeConfig,
     pub channel: ChannelConfig,
     pub content_strategy: ContentStrategyConfig,
+    pub script_improvement: ScriptImprovementConfig,
     pub notifications: NotificationConfig,
     pub control_api_port: u16,
 }
@@ -106,6 +107,21 @@ pub struct AssetConfig {
     pub pexels_api_key: String,
     pub sd_api_url: Option<String>,
     pub sd_api_key: Option<String>,
+}
+
+/// Script self-improvement loop configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScriptImprovementConfig {
+    /// Enable the self-improvement loop
+    pub enabled: bool,
+    /// Number of initial script candidates to generate in parallel
+    pub candidate_count: u32,
+    /// Minimum score (1.0-10.0) to accept without refinement
+    pub quality_threshold: f32,
+    /// Maximum refinement iterations before accepting best available
+    pub max_iterations: u32,
+    /// Total timeout for the entire self-improvement process (seconds)
+    pub timeout_seconds: u32,
 }
 
 impl Settings {
@@ -245,6 +261,42 @@ impl Settings {
             .set_override_option(
                 "content_strategy.videos_per_week",
                 std::env::var("VIDEOS_PER_WEEK")
+                    .ok()
+                    .and_then(|v| v.parse::<i64>().ok()),
+            )?
+            // Script Self-Improvement Loop
+            .set_default("script_improvement.enabled", true)?
+            .set_override_option(
+                "script_improvement.enabled",
+                std::env::var("SCRIPT_IMPROVEMENT_ENABLED")
+                    .ok()
+                    .map(|v| v.to_lowercase() == "true" || v == "1"),
+            )?
+            .set_default("script_improvement.candidate_count", 3)?
+            .set_override_option(
+                "script_improvement.candidate_count",
+                std::env::var("SCRIPT_IMPROVEMENT_CANDIDATES")
+                    .ok()
+                    .and_then(|v| v.parse::<i64>().ok()),
+            )?
+            .set_default("script_improvement.quality_threshold", 8.0)?
+            .set_override_option(
+                "script_improvement.quality_threshold",
+                std::env::var("SCRIPT_IMPROVEMENT_THRESHOLD")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok()),
+            )?
+            .set_default("script_improvement.max_iterations", 10)?
+            .set_override_option(
+                "script_improvement.max_iterations",
+                std::env::var("SCRIPT_IMPROVEMENT_MAX_ITERATIONS")
+                    .ok()
+                    .and_then(|v| v.parse::<i64>().ok()),
+            )?
+            .set_default("script_improvement.timeout_seconds", 1800)?
+            .set_override_option(
+                "script_improvement.timeout_seconds",
+                std::env::var("SCRIPT_IMPROVEMENT_TIMEOUT")
                     .ok()
                     .and_then(|v| v.parse::<i64>().ok()),
             )?

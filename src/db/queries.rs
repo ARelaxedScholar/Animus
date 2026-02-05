@@ -249,3 +249,96 @@ pub async fn clear_seed_queue(pool: &PgPool) -> Result<u64, sqlx::Error> {
         .await?;
     Ok(result.rows_affected())
 }
+
+// =============================================================================
+// Script Evaluation Functions (Self-Improvement Loop)
+// =============================================================================
+
+/// Insert a script evaluation record
+/// Returns the ID of the inserted evaluation
+pub async fn insert_script_evaluation(
+    pool: &PgPool,
+    video_id: Uuid,
+    iteration: i32,
+    candidate_index: Option<i32>,
+    script_hash: &str,
+    overall_score: f32,
+    criteria_scores: serde_json::Value,
+    strengths: &[String],
+    weaknesses: &[String],
+    ai_telltale_signs: &[String],
+    specific_improvements: serde_json::Value,
+    script_content: Option<serde_json::Value>,
+) -> Result<i32, sqlx::Error> {
+    let row: (i32,) = sqlx::query_as(
+        r#"INSERT INTO script_evaluations 
+           (video_id, iteration, candidate_index, script_hash, overall_score, 
+            criteria_scores, strengths, weaknesses, ai_telltale_signs, 
+            specific_improvements, script_content, selected)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, FALSE)
+           RETURNING id"#,
+    )
+    .bind(video_id)
+    .bind(iteration)
+    .bind(candidate_index)
+    .bind(script_hash)
+    .bind(overall_score)
+    .bind(criteria_scores)
+    .bind(strengths)
+    .bind(weaknesses)
+    .bind(ai_telltale_signs)
+    .bind(specific_improvements)
+    .bind(script_content)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
+/// Mark a script evaluation as the selected (final) one
+pub async fn mark_evaluation_selected(
+    pool: &PgPool,
+    evaluation_id: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE script_evaluations SET selected = TRUE WHERE id = $1")
+        .bind(evaluation_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Get all evaluations for a video (for debugging/analysis)
+pub async fn get_video_evaluations(
+    pool: &PgPool,
+    video_id: Uuid,
+) -> Result<Vec<(i32, i32, Option<i32>, f32, bool)>, sqlx::Error> {
+    // Returns (id, iteration, candidate_index, overall_score, selected)
+    let rows: Vec<(i32, i32, Option<i32>, f32, bool)> = sqlx::query_as(
+        r#"SELECT id, iteration, candidate_index, overall_score, selected 
+           FROM script_evaluations 
+           WHERE video_id = $1 
+           ORDER BY iteration ASC, candidate_index ASC NULLS LAST"#,
+    )
+    .bind(video_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Get the best evaluation for a video (highest score)
+pub async fn get_best_evaluation(
+    pool: &PgPool,
+    video_id: Uuid,
+) -> Result<Option<(i32, f32)>, sqlx::Error> {
+    // Returns (id, overall_score) of the best evaluation
+    let row: Option<(i32, f32)> = sqlx::query_as(
+        r#"SELECT id, overall_score 
+           FROM script_evaluations 
+           WHERE video_id = $1 
+           ORDER BY overall_score DESC 
+           LIMIT 1"#,
+    )
+    .bind(video_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}

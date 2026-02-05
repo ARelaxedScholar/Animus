@@ -3,8 +3,8 @@
 mod settings;
 
 pub use settings::{
-    ChannelConfig, ContentStrategyConfig, DatabaseConfig, LlmConfig, NotificationConfig,
-    S3Config, Settings, TtsConfig, YouTubeConfig,
+    AssetConfig, ChannelConfig, ContentStrategyConfig, DatabaseConfig, LlmConfig, 
+    NotificationConfig, S3Config, ScriptImprovementConfig, Settings, TtsConfig, YouTubeConfig,
 };
 
 pub use config::ConfigError;

@@ -68,6 +68,9 @@ tera = "1"
 # Image processing
 image = "0.25"
 
+# Cryptographic hashing (for script dedup)
+sha2 = "0.10"
+
 [dev-dependencies]
 tokio-test = "0.4"
 
