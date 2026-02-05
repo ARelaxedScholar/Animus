@@ -1,0 +1,28 @@
+/target
+/.env
+/data
+*.log
+.DS_Store
+Thumbs.db
+
+# SQLx offline mode
+.sqlx/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Nix
+result
+result-*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Temporary files
+*.tmp
+*.bak

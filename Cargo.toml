@@ -1,0 +1,75 @@
+[package]
+name = "animus"
+version = "0.1.0"
+edition = "2021"
+description = "Autonomous YouTube content farm powered by Orichalcum"
+license = "MIT"
+authors = ["Excelsior Academy"]
+
+[dependencies]
+# Orchestration framework
+orichalcum = { path = "../Orichalcum", features = ["llm"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+tokio-util = "0.7"
+
+# Web framework for control API
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Database
+sqlx = { version = "0.7", features = ["postgres", "runtime-tokio", "uuid", "chrono", "json"] }
+
+# S3/Object storage
+aws-sdk-s3 = "1"
+aws-config = "1"
+
+# HTTP client (for APIs)
+reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Configuration
+config = "0.14"
+dotenvy = "0.15"
+
+# Logging/Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Date/Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# For subprocess communication (MoviePy bridge)
+serde_bytes = "0.11"
+
+# URL encoding for API calls
+urlencoding = "2"
+
+# Markdown/text processing
+pulldown-cmark = "0.10"
+
+# Templating (for thumbnails)
+tera = "1"
+
+# Image processing
+image = "0.25"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[features]
+default = []

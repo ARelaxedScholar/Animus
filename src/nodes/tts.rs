@@ -1,0 +1,562 @@
+//! TTS Node
+//!
+//! Converts scripts to natural-sounding audio using configurable TTS providers:
+//! - ElevenLabs (cloud, high quality)
+//! - Qwen3-TTS (open-source, local/self-hosted)
+//! - OpenAI TTS (cloud, good quality)
+
+use async_trait::async_trait;
+use orichalcum::{AsyncNodeLogic, NodeValue};
+use reqwest::Client as HttpClient;
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tracing::{error, info};
+
+use crate::db;
+use crate::nodes::{AudioTiming, Script, SectionTiming};
+use crate::state_keys;
+use crate::storage::S3Client;
+
+/// TTS Provider selection
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TTSProvider {
+    /// ElevenLabs cloud API
+    ElevenLabs,
+    /// Qwen3-TTS (self-hosted or local)
+    Qwen3,
+    /// OpenAI TTS API
+    OpenAI,
+    /// Coqui TTS (local)
+    Coqui,
+    /// Piper TTS (local, very fast)
+    Piper,
+}
+
+impl Default for TTSProvider {
+    fn default() -> Self {
+        Self::ElevenLabs
+    }
+}
+
+/// Configuration for TTS - supports multiple providers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TTSConfig {
+    /// Which provider to use
+    pub provider: TTSProvider,
+    
+    // ElevenLabs settings
+    pub elevenlabs_api_key: Option<String>,
+    pub elevenlabs_voice_id: Option<String>,
+    pub elevenlabs_model_id: Option<String>,
+    
+    // Qwen3-TTS settings (OpenAI-compatible API)
+    pub qwen3_api_url: Option<String>,  // e.g., "http://localhost:8000/v1"
+    pub qwen3_api_key: Option<String>,  // Optional, depends on setup
+    pub qwen3_voice: Option<String>,    // Voice/speaker ID
+    
+    // OpenAI TTS settings
+    pub openai_api_key: Option<String>,
+    pub openai_voice: Option<String>,   // alloy, echo, fable, onyx, nova, shimmer
+    pub openai_model: Option<String>,   // tts-1, tts-1-hd
+    
+    // Coqui/Piper settings (local)
+    pub local_model_path: Option<String>,
+    pub local_speaker_id: Option<String>,
+    
+    // Common settings
+    pub stability: f32,
+    pub similarity_boost: f32,
+    pub speed: f32,
+}
+
+impl Default for TTSConfig {
+    fn default() -> Self {
+        Self {
+            provider: TTSProvider::ElevenLabs,
+            elevenlabs_api_key: None,
+            elevenlabs_voice_id: None,
+            elevenlabs_model_id: Some("eleven_monolingual_v1".to_string()),
+            qwen3_api_url: None,
+            qwen3_api_key: None,
+            qwen3_voice: Some("default".to_string()),
+            openai_api_key: None,
+            openai_voice: Some("onyx".to_string()),
+            openai_model: Some("tts-1-hd".to_string()),
+            local_model_path: None,
+            local_speaker_id: None,
+            stability: 0.5,
+            similarity_boost: 0.75,
+            speed: 1.0,
+        }
+    }
+}
+
+/// Request body for ElevenLabs TTS
+#[derive(Debug, Serialize)]
+struct ElevenLabsRequest {
+    text: String,
+    model_id: String,
+    voice_settings: VoiceSettings,
+}
+
+#[derive(Debug, Serialize)]
+struct VoiceSettings {
+    stability: f32,
+    similarity_boost: f32,
+}
+
+/// Request body for OpenAI-compatible TTS (works for OpenAI and Qwen3)
+#[derive(Debug, Serialize)]
+struct OpenAITTSRequest {
+    model: String,
+    input: String,
+    voice: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speed: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<String>,
+}
+
+/// The TTS node logic
+#[derive(Clone)]
+pub struct TTSLogic {
+    pub config: TTSConfig,
+    pub http_client: Arc<HttpClient>,
+    pub s3_client: Arc<S3Client>,
+    pub db_pool: Arc<PgPool>,
+}
+
+impl TTSLogic {
+    pub fn new(config: TTSConfig, s3_client: Arc<S3Client>, db_pool: Arc<PgPool>) -> Self {
+        Self {
+            config,
+            http_client: Arc::new(HttpClient::new()),
+            s3_client,
+            db_pool,
+        }
+    }
+
+    /// Generate audio using the configured provider
+    async fn generate_audio(&self, text: &str) -> Result<Vec<u8>, String> {
+        match self.config.provider {
+            TTSProvider::ElevenLabs => self.generate_elevenlabs(text).await,
+            TTSProvider::Qwen3 => self.generate_qwen3(text).await,
+            TTSProvider::OpenAI => self.generate_openai(text).await,
+            TTSProvider::Coqui => self.generate_local_coqui(text).await,
+            TTSProvider::Piper => self.generate_local_piper(text).await,
+        }
+    }
+
+    /// Generate audio using ElevenLabs
+    async fn generate_elevenlabs(&self, text: &str) -> Result<Vec<u8>, String> {
+        let api_key = self.config.elevenlabs_api_key.as_ref()
+            .ok_or("ElevenLabs API key not configured")?;
+        let voice_id = self.config.elevenlabs_voice_id.as_ref()
+            .ok_or("ElevenLabs voice ID not configured")?;
+        let model_id = self.config.elevenlabs_model_id.as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("eleven_monolingual_v1");
+
+        let url = format!(
+            "https://api.elevenlabs.io/v1/text-to-speech/{}",
+            voice_id
+        );
+
+        let request_body = ElevenLabsRequest {
+            text: text.to_string(),
+            model_id: model_id.to_string(),
+            voice_settings: VoiceSettings {
+                stability: self.config.stability,
+                similarity_boost: self.config.similarity_boost,
+            },
+        };
+
+        let response = self.http_client
+            .post(&url)
+            .header("xi-api-key", api_key)
+            .header("Content-Type", "application/json")
+            .header("Accept", "audio/mpeg")
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| format!("ElevenLabs request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("ElevenLabs API error {}: {}", status, error_text));
+        }
+
+        let audio_bytes = response.bytes().await
+            .map_err(|e| format!("Failed to read audio bytes: {}", e))?;
+
+        Ok(audio_bytes.to_vec())
+    }
+
+    /// Generate audio using Qwen3-TTS (OpenAI-compatible endpoint)
+    async fn generate_qwen3(&self, text: &str) -> Result<Vec<u8>, String> {
+        let api_url = self.config.qwen3_api_url.as_ref()
+            .ok_or("Qwen3-TTS API URL not configured")?;
+        let voice = self.config.qwen3_voice.as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("default");
+
+        let url = format!("{}/audio/speech", api_url.trim_end_matches('/'));
+
+        let request_body = OpenAITTSRequest {
+            model: "qwen3-tts".to_string(), // Model name depends on your setup
+            input: text.to_string(),
+            voice: voice.to_string(),
+            speed: Some(self.config.speed),
+            response_format: Some("mp3".to_string()),
+        };
+
+        let mut request = self.http_client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&request_body);
+
+        // Add API key if configured
+        if let Some(api_key) = &self.config.qwen3_api_key {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| format!("Qwen3-TTS request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("Qwen3-TTS API error {}: {}", status, error_text));
+        }
+
+        let audio_bytes = response.bytes().await
+            .map_err(|e| format!("Failed to read audio bytes: {}", e))?;
+
+        Ok(audio_bytes.to_vec())
+    }
+
+    /// Generate audio using OpenAI TTS
+    async fn generate_openai(&self, text: &str) -> Result<Vec<u8>, String> {
+        let api_key = self.config.openai_api_key.as_ref()
+            .ok_or("OpenAI API key not configured")?;
+        let voice = self.config.openai_voice.as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("onyx");
+        let model = self.config.openai_model.as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("tts-1-hd");
+
+        let request_body = OpenAITTSRequest {
+            model: model.to_string(),
+            input: text.to_string(),
+            voice: voice.to_string(),
+            speed: Some(self.config.speed),
+            response_format: Some("mp3".to_string()),
+        };
+
+        let response = self.http_client
+            .post("https://api.openai.com/v1/audio/speech")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| format!("OpenAI TTS request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(format!("OpenAI TTS API error {}: {}", status, error_text));
+        }
+
+        let audio_bytes = response.bytes().await
+            .map_err(|e| format!("Failed to read audio bytes: {}", e))?;
+
+        Ok(audio_bytes.to_vec())
+    }
+
+    /// Generate audio using local Coqui TTS
+    async fn generate_local_coqui(&self, text: &str) -> Result<Vec<u8>, String> {
+        use std::process::Stdio;
+        use tokio::process::Command;
+
+        let model_path = self.config.local_model_path.as_ref()
+            .ok_or("Coqui model path not configured")?;
+
+        // Create a temp file for output
+        let output_path = format!("/tmp/coqui_output_{}.wav", uuid::Uuid::new_v4());
+
+        let mut cmd = Command::new("tts");
+        cmd.arg("--text").arg(text)
+           .arg("--model_path").arg(model_path)
+           .arg("--out_path").arg(&output_path)
+           .stdout(Stdio::null())
+           .stderr(Stdio::null());
+
+        if let Some(speaker_id) = &self.config.local_speaker_id {
+            cmd.arg("--speaker_idx").arg(speaker_id);
+        }
+
+        let status = cmd.status().await
+            .map_err(|e| format!("Failed to run Coqui TTS: {}", e))?;
+
+        if !status.success() {
+            return Err("Coqui TTS failed".to_string());
+        }
+
+        // Read the output file
+        let audio_bytes = tokio::fs::read(&output_path).await
+            .map_err(|e| format!("Failed to read Coqui output: {}", e))?;
+
+        // Clean up
+        let _ = tokio::fs::remove_file(&output_path).await;
+
+        Ok(audio_bytes)
+    }
+
+    /// Generate audio using local Piper TTS
+    async fn generate_local_piper(&self, text: &str) -> Result<Vec<u8>, String> {
+        use std::process::Stdio;
+        use tokio::process::Command;
+        use tokio::io::AsyncWriteExt;
+
+        let model_path = self.config.local_model_path.as_ref()
+            .ok_or("Piper model path not configured")?;
+
+        let output_path = format!("/tmp/piper_output_{}.wav", uuid::Uuid::new_v4());
+
+        // Piper reads from stdin and writes to file
+        let mut child = Command::new("piper")
+            .arg("--model").arg(model_path)
+            .arg("--output_file").arg(&output_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn Piper: {}", e))?;
+
+        // Write text to stdin
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(text.as_bytes()).await
+                .map_err(|e| format!("Failed to write to Piper: {}", e))?;
+        }
+
+        let status = child.wait().await
+            .map_err(|e| format!("Piper process failed: {}", e))?;
+
+        if !status.success() {
+            return Err("Piper TTS failed".to_string());
+        }
+
+        // Read the output file
+        let audio_bytes = tokio::fs::read(&output_path).await
+            .map_err(|e| format!("Failed to read Piper output: {}", e))?;
+
+        // Clean up
+        let _ = tokio::fs::remove_file(&output_path).await;
+
+        Ok(audio_bytes)
+    }
+
+    /// Estimate duration from text (words per minute based)
+    fn estimate_duration_seconds(&self, text: &str) -> f64 {
+        let word_count = text.split_whitespace().count();
+        // Assume ~150 words per minute for natural speech, adjusted by speed
+        ((word_count as f64 / 150.0) * 60.0) / self.config.speed as f64
+    }
+}
+
+#[async_trait]
+impl AsyncNodeLogic for TTSLogic {
+    async fn prep(
+        &self,
+        _params: &HashMap<String, NodeValue>,
+        shared: &HashMap<String, NodeValue>,
+    ) -> NodeValue {
+        let script = shared
+            .get(state_keys::SCRIPT)
+            .cloned()
+            .unwrap_or(serde_json::json!(null));
+
+        serde_json::json!({
+            "script": script
+        })
+    }
+
+    async fn exec(&self, input: NodeValue) -> NodeValue {
+        // Parse the script
+        let script: Script = match input.get("script") {
+            Some(s) => match serde_json::from_value(s.clone()) {
+                Ok(script) => script,
+                Err(e) => {
+                    return serde_json::json!({
+                        "error": format!("Failed to parse script: {}", e)
+                    });
+                }
+            },
+            None => {
+                return serde_json::json!({
+                    "error": "No script provided"
+                });
+            }
+        };
+
+        info!(
+            "TTS: Generating audio for video {} using {:?}",
+            script.video_id,
+            self.config.provider
+        );
+
+        let full_text = &script.full_text;
+        let mut section_timings: Vec<SectionTiming> = Vec::new();
+        let mut current_time: f64 = 0.0;
+
+        // Generate audio for the full script
+        let audio_bytes = match self.generate_audio(full_text).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return serde_json::json!({
+                    "error": format!("TTS generation failed: {}", e)
+                });
+            }
+        };
+
+        // Calculate section timings based on estimates
+        // Hook
+        let hook_duration = self.estimate_duration_seconds(&script.hook.narration);
+        section_timings.push(SectionTiming {
+            section_title: script.hook.title.clone(),
+            start_seconds: 0.0,
+            end_seconds: hook_duration,
+        });
+        current_time = hook_duration;
+
+        // Main sections
+        for section in &script.sections {
+            let section_duration = self.estimate_duration_seconds(&section.narration);
+            section_timings.push(SectionTiming {
+                section_title: section.title.clone(),
+                start_seconds: current_time,
+                end_seconds: current_time + section_duration,
+            });
+            current_time += section_duration;
+        }
+
+        // CTA
+        let cta_duration = self.estimate_duration_seconds(&script.cta.narration);
+        section_timings.push(SectionTiming {
+            section_title: script.cta.title.clone(),
+            start_seconds: current_time,
+            end_seconds: current_time + cta_duration,
+        });
+        current_time += cta_duration;
+
+        // Upload to S3
+        let audio_key = format!("audio/{}/{}.mp3", script.video_id, script.video_id);
+        
+        match self.s3_client.upload_bytes(&audio_key, audio_bytes, "audio/mpeg").await {
+            Ok(_) => {
+                info!("TTS: Uploaded audio to {}", audio_key);
+            }
+            Err(e) => {
+                return serde_json::json!({
+                    "error": format!("Failed to upload audio: {}", e)
+                });
+            }
+        }
+
+        serde_json::json!({
+            "success": true,
+            "audio_path": audio_key,
+            "total_duration_seconds": current_time,
+            "section_timings": section_timings,
+            "video_id": script.video_id.to_string(),
+            "provider": format!("{:?}", self.config.provider)
+        })
+    }
+
+    async fn post(
+        &self,
+        shared: &mut HashMap<String, NodeValue>,
+        _prep_res: NodeValue,
+        exec_res: NodeValue,
+    ) -> Option<String> {
+        // Check for errors
+        if let Some(error) = exec_res.get("error").and_then(|v| v.as_str()) {
+            error!("TTS node failed: {}", error);
+            shared.insert(state_keys::ERROR.to_string(), serde_json::json!(error));
+            
+            // Mark video as failed in database
+            if let Some(vid) = shared.get(state_keys::VIDEO_ID).and_then(|v| v.as_str()) {
+                if let Ok(video_id) = uuid::Uuid::parse_str(vid) {
+                    let _ = db::mark_video_failed(&self.db_pool, video_id, "tts", error).await;
+                }
+            }
+            
+            return Some("error".to_string());
+        }
+
+        let audio_path = exec_res.get("audio_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let total_duration = exec_res.get("total_duration_seconds")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+
+        let section_timings: Vec<SectionTiming> = exec_res.get("section_timings")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        let provider = exec_res.get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        let audio_timing = AudioTiming {
+            audio_path: audio_path.clone(),
+            total_duration_seconds: total_duration,
+            section_timings,
+        };
+
+        info!(
+            "TTS: Generated audio ({}s duration, provider: {})",
+            total_duration as u32,
+            provider
+        );
+
+        // Store in shared state
+        shared.insert(state_keys::AUDIO_PATH.to_string(), serde_json::json!(audio_path));
+        shared.insert(
+            state_keys::AUDIO_TIMING.to_string(),
+            serde_json::to_value(&audio_timing).unwrap_or(serde_json::json!(null)),
+        );
+
+        // Persist audio_timing to database
+        if let Some(vid) = exec_res.get("video_id").and_then(|v| v.as_str()) {
+            if let Ok(video_id) = uuid::Uuid::parse_str(vid) {
+                if let Err(e) = db::update_video_json_field(
+                    &self.db_pool,
+                    video_id,
+                    "audio_timing",
+                    serde_json::to_value(&audio_timing).unwrap_or(serde_json::json!(null)),
+                ).await {
+                    error!("Failed to persist audio_timing to database: {}", e);
+                }
+            }
+        }
+
+        // Proceed to asset collector
+        Some("default".to_string())
+    }
+
+    fn clone_box(&self) -> Box<dyn AsyncNodeLogic> {
+        Box::new(self.clone())
+    }
+}

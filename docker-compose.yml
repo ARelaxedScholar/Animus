@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: animus-postgres
+    environment:
+      POSTGRES_USER: animus
+      POSTGRES_PASSWORD: animus
+      POSTGRES_DB: animus
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U animus"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: animus-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Create default bucket on startup
+  minio-init:
+    image: minio/mc:latest
+    container_name: animus-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb local/animus-assets --ignore-existing;
+      mc anonymous set download local/animus-assets;
+      echo 'Bucket created successfully';
+      "
+
+volumes:
+  postgres_data:
+  minio_data:

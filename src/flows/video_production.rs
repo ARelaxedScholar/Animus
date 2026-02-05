@@ -1,0 +1,172 @@
+//! Video Production Flow
+//!
+//! Wires together all nodes into a complete production pipeline.
+
+use orichalcum::llm::{Client, Enabled, Providers};
+use orichalcum::{AsyncFlow, AsyncNode, Executable};
+use sqlx::PgPool;
+use std::sync::Arc;
+
+use crate::config::Settings;
+use crate::nodes::asset_collector::{AssetCollectorConfig, AssetCollectorLogic};
+use crate::nodes::publisher::{PublisherConfig, PublisherLogic};
+use crate::nodes::scheduler::{SchedulerConfig, SchedulerLogic};
+use crate::nodes::script_writer::{ScriptWriterConfig, ScriptWriterLogic};
+use crate::nodes::seo_optimizer::{SEOConfig, SEOOptimizerLogic};
+use crate::nodes::strategy::{StrategyConfig, StrategyLogic};
+use crate::nodes::thumbnail::{ThumbnailConfig, ThumbnailLogic};
+use crate::nodes::tts::{TTSConfig, TTSLogic};
+use crate::nodes::video_assembler::{VideoAssemblerConfig, VideoAssemblerLogic};
+use crate::storage::S3Client;
+
+/// The main video production flow
+pub struct VideoProductionFlow {
+    flow: AsyncFlow,
+}
+
+impl VideoProductionFlow {
+    /// Create a new video production flow from settings
+    pub fn new(
+        settings: &Settings,
+        llm_client: Arc<Client<Providers<orichalcum::llm::Disabled, Enabled, Enabled>>>,
+        s3_client: Arc<S3Client>,
+        db_pool: Arc<PgPool>,
+    ) -> Self {
+        // Create all node configurations
+        let scheduler_config = SchedulerConfig {
+            videos_per_week: settings.content_strategy.videos_per_week,
+            ..Default::default()
+        };
+
+        let strategy_config = StrategyConfig {
+            target_duration_min: settings.content_strategy.target_duration_min,
+            target_duration_max: settings.content_strategy.target_duration_max,
+            channel_name: settings.channel.name.clone(),
+            ..Default::default()
+        };
+
+        let script_writer_config = ScriptWriterConfig {
+            channel_name: settings.channel.name.clone(),
+            ..Default::default()
+        };
+
+        let tts_config = TTSConfig {
+            elevenlabs_api_key: settings.tts.elevenlabs_api_key.clone(),
+            elevenlabs_voice_id: settings.tts.elevenlabs_voice_id.clone(),
+            stability: settings.tts.stability,
+            similarity_boost: settings.tts.similarity_boost,
+            ..Default::default()
+        };
+
+        let asset_collector_config = AssetCollectorConfig {
+            pexels_api_key: settings.assets.pexels_api_key.clone(),
+            sd_api_url: settings.assets.sd_api_url.clone(),
+            ..Default::default()
+        };
+        let video_assembler_config = VideoAssemblerConfig::default();
+        let thumbnail_config = ThumbnailConfig::default();
+
+        let seo_config = SEOConfig {
+            channel_name: settings.channel.name.clone(),
+            ..Default::default()
+        };
+
+        let publisher_config = PublisherConfig {
+            client_id: settings.youtube.client_id.clone(),
+            client_secret: settings.youtube.client_secret.clone(),
+            refresh_token: settings.youtube.refresh_token.clone(),
+            ..Default::default()
+        };
+
+        // Create nodes with database pool for persistence
+        let scheduler_node = AsyncNode::new(SchedulerLogic::new(
+            scheduler_config,
+            db_pool.clone(),
+        ));
+        let strategy_node = AsyncNode::new(StrategyLogic::new(
+            strategy_config,
+            llm_client.clone(),
+            db_pool.clone(),
+        ));
+        let script_writer_node = AsyncNode::new(ScriptWriterLogic::new(
+            script_writer_config,
+            llm_client.clone(),
+            db_pool.clone(),
+        ));
+        let tts_node = AsyncNode::new(TTSLogic::new(
+            tts_config,
+            s3_client.clone(),
+            db_pool.clone(),
+        ));
+        let asset_collector_node = AsyncNode::new(AssetCollectorLogic::new(
+            asset_collector_config,
+            s3_client.clone(),
+            db_pool.clone(),
+        ));
+        let video_assembler_node = AsyncNode::new(VideoAssemblerLogic::new(
+            video_assembler_config,
+            s3_client.clone(),
+            db_pool.clone(),
+        ));
+        let thumbnail_node = AsyncNode::new(ThumbnailLogic::new(
+            thumbnail_config,
+            s3_client.clone(),
+            db_pool.clone(),
+        ));
+        let seo_node = AsyncNode::new(SEOOptimizerLogic::new(
+            seo_config,
+            llm_client.clone(),
+            db_pool.clone(),
+        ));
+        let publisher_node = AsyncNode::new(PublisherLogic::new(
+            publisher_config,
+            s3_client.clone(),
+            db_pool.clone(),
+        ));
+
+        // Wire the flow:
+        // Scheduler -> Strategy -> ScriptWriter -> TTS -> AssetCollector -> VideoAssembler -> Thumbnail -> SEO -> Publisher
+
+        let publisher = publisher_node; // End of chain
+
+        let seo = seo_node.next(Executable::Async(publisher));
+        let thumbnail = thumbnail_node.next(Executable::Async(seo));
+        let video_assembler = video_assembler_node.next(Executable::Async(thumbnail));
+        let asset_collector = asset_collector_node.next(Executable::Async(video_assembler));
+        let tts = tts_node.next(Executable::Async(asset_collector));
+        let script_writer = script_writer_node.next(Executable::Async(tts));
+        let strategy = strategy_node.next(Executable::Async(script_writer));
+
+        // Scheduler can go to strategy (default) or wait (if no production needed)
+        let scheduler = scheduler_node.next(Executable::Async(strategy));
+
+        // Create the flow starting with scheduler
+        let flow = AsyncFlow::new(Executable::Async(scheduler));
+
+        Self { flow }
+    }
+
+    /// Get a mutable reference to the underlying flow
+    pub fn inner_mut(&mut self) -> &mut AsyncFlow {
+        &mut self.flow
+    }
+
+    /// Get a reference to the underlying flow
+    pub fn inner(&self) -> &AsyncFlow {
+        &self.flow
+    }
+}
+
+impl std::ops::Deref for VideoProductionFlow {
+    type Target = AsyncFlow;
+
+    fn deref(&self) -> &Self::Target {
+        &self.flow
+    }
+}
+
+impl std::ops::DerefMut for VideoProductionFlow {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.flow
+    }
+}
