@@ -80,9 +80,16 @@ pub struct AssetCollectorLogic {
 
 impl AssetCollectorLogic {
     pub fn new(config: AssetCollectorConfig, s3_client: Arc<S3Client>, db_pool: Arc<PgPool>) -> Self {
+        // Create HTTP client with reasonable timeouts for video downloads
+        let http_client = HttpClient::builder()
+            .timeout(std::time::Duration::from_secs(120)) // 2 minute timeout per download
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to create HTTP client");
+        
         Self {
             config,
-            http_client: Arc::new(HttpClient::new()),
+            http_client: Arc::new(http_client),
             s3_client,
             db_pool,
         }
@@ -221,20 +228,31 @@ impl AssetCollectorLogic {
         section_index: usize,
         clip_index: usize,
     ) -> Result<AssetFile, String> {
-        // Find the best quality video file (prefer HD)
+        // Find the best quality video file (prefer HD/4K)
         let video_file = video.video_files.iter()
             .filter(|f| f.width >= 1280)
             .max_by_key(|f| f.width)
             .or_else(|| video.video_files.first())
             .ok_or("No video files available")?;
 
+        info!(
+            "AssetCollector: Downloading video {} ({}x{})...",
+            video.id, video_file.width, video_file.height
+        );
+
         // Download the video
-        let video_bytes = self.http_client
+        let response = self.http_client
             .get(&video_file.link)
             .send()
             .await
-            .map_err(|e| format!("Failed to download video: {}", e))?
-            .bytes()
+            .map_err(|e| format!("Failed to download video: {}", e))?;
+        
+        // Log content length if available
+        if let Some(content_length) = response.content_length() {
+            info!("AssetCollector: Video size: {} MB", content_length / 1024 / 1024);
+        }
+        
+        let video_bytes = response.bytes()
             .await
             .map_err(|e| format!("Failed to read video bytes: {}", e))?;
 
@@ -246,6 +264,8 @@ impl AssetCollectorLogic {
 
         self.s3_client.upload_bytes(&key, video_bytes.to_vec(), "video/mp4").await
             .map_err(|e| format!("Failed to upload to S3: {}", e))?;
+
+        info!("AssetCollector: Uploaded {} ({} MB)", key, video_bytes.len() / 1024 / 1024);
 
         Ok(AssetFile {
             path: key,
@@ -283,7 +303,15 @@ impl AsyncNodeLogic for AssetCollectorLogic {
         all_sections.extend(script.sections.iter());
         all_sections.push(&script.cta);
 
+        let total_sections = all_sections.len();
+        let mut total_clips_downloaded = 0u32;
+        
         for (section_idx, section) in all_sections.iter().enumerate() {
+            info!(
+                "AssetCollector: Section {}/{} - '{}'",
+                section_idx + 1, total_sections, section.title
+            );
+            
             let mut video_clips: Vec<AssetFile> = Vec::new();
 
             for (suggestion_idx, suggestion) in section.visual_suggestions.iter().enumerate() {
@@ -297,7 +325,10 @@ impl AsyncNodeLogic for AssetCollectorLogic {
                                 section_idx,
                                 suggestion_idx * 10 + clip_idx,
                             ).await {
-                                Ok(asset) => video_clips.push(asset),
+                                Ok(asset) => {
+                                    video_clips.push(asset);
+                                    total_clips_downloaded += 1;
+                                }
                                 Err(e) => warn!("Failed to download clip: {}", e),
                             }
                         }
@@ -308,6 +339,11 @@ impl AsyncNodeLogic for AssetCollectorLogic {
                 // Rate limiting
                 tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
             }
+            
+            info!(
+                "AssetCollector: Section {}/{} complete - {} clips",
+                section_idx + 1, total_sections, video_clips.len()
+            );
 
             section_assets.push(SectionAssets {
                 section_title: section.title.clone(),
@@ -315,6 +351,11 @@ impl AsyncNodeLogic for AssetCollectorLogic {
                 images: vec![], // Could add Stable Diffusion images here
             });
         }
+        
+        info!(
+            "AssetCollector: Finished - {} total clips downloaded",
+            total_clips_downloaded
+        );
 
         let manifest = AssetManifest {
             video_id: script.video_id,
