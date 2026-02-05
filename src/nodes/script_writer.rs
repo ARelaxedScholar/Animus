@@ -245,26 +245,27 @@ ACTUAL WORD COUNT: {}
 {}
 === END SCRIPT ===
 
-Respond with this exact JSON structure:
+Ensure your response follows this exact schema, and that `<description of variable>`
+are replaced with a proper value based on your evalution. :
 {{
-  "overall_score": 7.2,
+  "overall_score": "<Score out of 10>",
   "criteria": {{
-    "hook_strength": {{ "score": 8.0, "notes": "..." }},
-    "pacing_retention": {{ "score": 6.5, "notes": "..." }},
-    "wisdom_integration": {{ "score": 7.0, "notes": "..." }},
-    "authenticity": {{ "score": 7.5, "notes": "..." }},
-    "duration_accuracy": {{ "score": 9.0, "notes": "..." }},
-    "cta_quality": {{ "score": 6.0, "notes": "..." }},
-    "ai_detection": {{ "score": 7.0, "notes": "..." }}
+    "hook_strength": {{ "score": <score out of 10>, "notes": "..." }},
+    "pacing_retention": {{ "score": <score out of 10>, "notes": "..." }},
+    "wisdom_integration": {{ "score": <score out of 10>, "notes": "..." }},
+    "authenticity": {{ "score": <score out of 10>, "notes": "..." }},
+    "duration_accuracy": {{ "score": <score out of 10>, "notes": "..." }},
+    "cta_quality": {{ "score": <score out of 10>, "notes": "..." }},
+    "ai_detection": {{ "score": <score out of 10>, "notes": "..." }}
   }},
-  "strengths": ["strength 1", "strength 2"],
-  "weaknesses": ["weakness 1", "weakness 2"],
-  "ai_telltale_signs": ["specific sign 1", "specific sign 2"],
+  "strengths": ["<strength 1>", "<strength 2>", ...],
+  "weaknesses": ["<weakness 1>", "<weakness 2>", ...],
+  "ai_telltale_signs": ["<specific sign 1>", "<specific sign 2>", ...],
   "specific_improvements": [
     {{
-      "location": "Section 2, paragraph 3",
-      "issue": "What's wrong",
-      "suggestion": "How to fix it"
+      "location": "<which section>, <which paragraph>",
+      "issue": "<What's wrong>",
+      "suggestion": "<How to fix it>"
     }}
   ]
 }}"#,
@@ -476,7 +477,10 @@ IMPORTANT:
             parsed.get("criteria")
                 .and_then(|c| c.get(name))
                 .map(|v| CriterionScore {
-                    score: v.get("score").and_then(|s| s.as_f64()).unwrap_or(5.0) as f32,
+                    score: v.get("score").and_then(|s| {
+                        dbg!(s);
+                        s.as_f64()
+                    }).unwrap_or(5.0) as f32,
                     notes: v.get("notes").and_then(|s| s.as_str()).unwrap_or("").to_string(),
                 })
                 .unwrap_or(CriterionScore { score: 5.0, notes: String::new() })
@@ -704,18 +708,18 @@ IMPORTANT:
         const STAGNATION_THRESHOLD: u32 = 3; // Break if no improvement for 3 iterations
         const BASE_TEMPERATURE: f32 = 0.6;
         const MAX_TEMPERATURE: f32 = 1.0;
-        
+
         while best.evaluation.overall_score < config.quality_threshold
             && iteration < config.max_iterations
             && Instant::now() < deadline
             && stagnant_iterations < STAGNATION_THRESHOLD
         {
             iteration += 1;
-            
+
             // Escalate temperature based on stagnation (0.6 -> 0.7 -> 0.8 -> 0.9 -> 1.0)
             let temperature = (BASE_TEMPERATURE + (stagnant_iterations as f32 * 0.1)).min(MAX_TEMPERATURE);
             let force_dramatic = stagnant_iterations >= 2;
-            
+
             info!(
                 "ScriptWriter: Refinement {}/{} (score: {:.1}, temp: {:.1}, stagnant: {})",
                 iteration, config.max_iterations, best.evaluation.overall_score, temperature, stagnant_iterations

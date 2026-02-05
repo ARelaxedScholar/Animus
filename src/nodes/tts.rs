@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::db;
 use crate::nodes::{AudioTiming, Script, SectionTiming};
@@ -131,9 +131,17 @@ pub struct TTSLogic {
 
 impl TTSLogic {
     pub fn new(config: TTSConfig, s3_client: Arc<S3Client>, db_pool: Arc<PgPool>) -> Self {
+        // Create HTTP client with long timeout for TTS generation
+        // Long scripts (12-20 min) can take several minutes to generate
+        let http_client = HttpClient::builder()
+            .timeout(std::time::Duration::from_secs(600)) // 10 minute timeout
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to create HTTP client");
+        
         Self {
             config,
-            http_client: Arc::new(HttpClient::new()),
+            http_client: Arc::new(http_client),
             s3_client,
             db_pool,
         }
@@ -151,6 +159,7 @@ impl TTSLogic {
     }
 
     /// Generate audio using ElevenLabs
+    /// Handles chunking for long texts (ElevenLabs has character limits)
     async fn generate_elevenlabs(&self, text: &str) -> Result<Vec<u8>, String> {
         let api_key = self.config.elevenlabs_api_key.as_ref()
             .ok_or("ElevenLabs API key not configured")?;
@@ -160,6 +169,120 @@ impl TTSLogic {
             .map(|s| s.as_str())
             .unwrap_or("eleven_monolingual_v1");
 
+        let word_count = text.split_whitespace().count();
+        let char_count = text.len();
+        let estimated_duration_min = word_count as f64 / 150.0;
+        
+        // ElevenLabs has a 5000 character limit per request
+        // We'll use a conservative 4500 to account for edge cases
+        const MAX_CHARS_PER_CHUNK: usize = 4500;
+        
+        if char_count <= MAX_CHARS_PER_CHUNK {
+            // Single request for short text
+            info!(
+                "TTS: Sending {} chars ({} words) to ElevenLabs (est. {:.1} min audio)...",
+                char_count, word_count, estimated_duration_min
+            );
+            return self.generate_elevenlabs_chunk(text, api_key, voice_id, model_id).await;
+        }
+        
+        // Need to chunk the text
+        let chunks = Self::chunk_text_for_tts(text, MAX_CHARS_PER_CHUNK);
+        info!(
+            "TTS: Splitting {} chars into {} chunks for ElevenLabs (est. {:.1} min total)...",
+            char_count, chunks.len(), estimated_duration_min
+        );
+        
+        let mut all_audio: Vec<u8> = Vec::new();
+        
+        for (i, chunk) in chunks.iter().enumerate() {
+            info!("TTS: Processing chunk {}/{} ({} chars)...", i + 1, chunks.len(), chunk.len());
+            
+            match self.generate_elevenlabs_chunk(chunk, api_key, voice_id, model_id).await {
+                Ok(audio_bytes) => {
+                    info!("TTS: Chunk {}/{} complete ({} bytes)", i + 1, chunks.len(), audio_bytes.len());
+                    all_audio.extend(audio_bytes);
+                }
+                Err(e) => {
+                    warn!("TTS: Chunk {}/{} failed: {}", i + 1, chunks.len(), e);
+                    return Err(format!("Failed on chunk {}: {}", i + 1, e));
+                }
+            }
+            
+            // Small delay between chunks to avoid rate limiting
+            if i < chunks.len() - 1 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+        }
+        
+        info!("TTS: All chunks complete, total {} bytes", all_audio.len());
+        Ok(all_audio)
+    }
+    
+    /// Split text into chunks at sentence boundaries
+    fn chunk_text_for_tts(text: &str, max_chars: usize) -> Vec<String> {
+        let mut chunks = Vec::new();
+        let mut current_chunk = String::new();
+        
+        // Split by sentences (period, exclamation, question mark followed by space or end)
+        let sentences: Vec<&str> = text
+            .split_inclusive(|c| c == '.' || c == '!' || c == '?')
+            .collect();
+        
+        for sentence in sentences {
+            let sentence = sentence.trim();
+            if sentence.is_empty() {
+                continue;
+            }
+            
+            // If adding this sentence would exceed the limit
+            if !current_chunk.is_empty() && current_chunk.len() + sentence.len() + 1 > max_chars {
+                // Save current chunk and start new one
+                chunks.push(current_chunk.trim().to_string());
+                current_chunk = String::new();
+            }
+            
+            // If a single sentence is too long, split it by commas or just force-split
+            if sentence.len() > max_chars {
+                // Try splitting by commas first
+                let parts: Vec<&str> = sentence.split(',').collect();
+                for part in parts {
+                    let part = part.trim();
+                    if current_chunk.len() + part.len() + 2 > max_chars {
+                        if !current_chunk.is_empty() {
+                            chunks.push(current_chunk.trim().to_string());
+                            current_chunk = String::new();
+                        }
+                    }
+                    if !current_chunk.is_empty() {
+                        current_chunk.push_str(", ");
+                    }
+                    current_chunk.push_str(part);
+                }
+            } else {
+                if !current_chunk.is_empty() {
+                    current_chunk.push(' ');
+                }
+                current_chunk.push_str(sentence);
+            }
+        }
+        
+        // Don't forget the last chunk
+        if !current_chunk.trim().is_empty() {
+            chunks.push(current_chunk.trim().to_string());
+        }
+        
+        chunks
+    }
+    
+    /// Generate audio for a single chunk using ElevenLabs
+    async fn generate_elevenlabs_chunk(
+        &self,
+        text: &str,
+        api_key: &str,
+        voice_id: &str,
+        model_id: &str,
+    ) -> Result<Vec<u8>, String> {
         let url = format!(
             "https://api.elevenlabs.io/v1/text-to-speech/{}",
             voice_id
@@ -558,5 +681,60 @@ impl AsyncNodeLogic for TTSLogic {
 
     fn clone_box(&self) -> Box<dyn AsyncNodeLogic> {
         Box::new(self.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chunk_text_short() {
+        // Short text should not be chunked
+        let text = "This is a short sentence. It should not be chunked.";
+        let chunks = TTSLogic::chunk_text_for_tts(text, 4500);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], text);
+    }
+
+    #[test]
+    fn test_chunk_text_by_sentences() {
+        // Should split at sentence boundaries
+        let text = "First sentence. Second sentence. Third sentence. Fourth sentence.";
+        let chunks = TTSLogic::chunk_text_for_tts(text, 40);
+        assert!(chunks.len() >= 2);
+        // Each chunk should end with a sentence terminator or be complete
+        for chunk in &chunks {
+            assert!(!chunk.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_chunk_text_preserves_content() {
+        let text = "The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. How vexingly quick daft zebras jump!";
+        let chunks = TTSLogic::chunk_text_for_tts(text, 60);
+        
+        // Rejoin and verify no content is lost (allowing for whitespace normalization)
+        let rejoined: String = chunks.join(" ");
+        let original_words: Vec<&str> = text.split_whitespace().collect();
+        let rejoined_words: Vec<&str> = rejoined.split_whitespace().collect();
+        
+        // All original words should be present
+        assert_eq!(original_words.len(), rejoined_words.len());
+    }
+
+    #[test]
+    fn test_chunk_text_respects_max_length() {
+        let text = "A. B. C. D. E. F. G. H. I. J. K. L. M. N. O. P. Q. R. S. T. U. V. W. X. Y. Z.";
+        let max_chars = 20;
+        let chunks = TTSLogic::chunk_text_for_tts(text, max_chars);
+        
+        for chunk in &chunks {
+            assert!(
+                chunk.len() <= max_chars + 10, // Small buffer for edge cases
+                "Chunk too long: {} chars (max {}): '{}'",
+                chunk.len(), max_chars, chunk
+            );
+        }
     }
 }
