@@ -282,6 +282,7 @@ Respond with this exact JSON structure:
         script: &Script,
         topic_brief: &TopicBrief,
         evaluation: &ScriptEvaluation,
+        force_dramatic_changes: bool,
     ) -> String {
         let improvements = evaluation.specific_improvements
             .iter()
@@ -297,27 +298,45 @@ Respond with this exact JSON structure:
 
         let target_words = topic_brief.target_duration_minutes * self.config.words_per_minute;
 
-        format!(r#"Revise this script based on the feedback below.
+        let dramatic_instruction = if force_dramatic_changes {
+            r#"
+⚠️ CRITICAL: Previous refinements have NOT improved the score. You MUST make DRAMATIC changes:
+- COMPLETELY REWRITE weak sections from scratch - do not just tweak words
+- Use a DIFFERENT narrative structure (if using chronological, try thematic; if using problem-solution, try story-based)
+- CHANGE the hook entirely - new angle, new opening line, new emotional appeal
+- REPLACE at least 50% of the examples and anecdotes with completely different ones
+- VARY sentence patterns dramatically - if you've been using short punchy sentences, use longer flowing ones (or vice versa)
+- ADD unexpected elements: rhetorical questions, direct challenges to the viewer, moments of silence/pause
+- BREAK conventional patterns: start a section with the conclusion, use a single powerful word as a transition
 
+DO NOT make superficial changes. The evaluator has seen similar variations and scored them the same.
+You need to take creative risks and try something genuinely different.
+"#
+        } else {
+            ""
+        };
+
+        format!(r#"Revise this script based on the feedback below.
+{dramatic_instruction}
 CRITICAL: Maintain what's working (the strengths) while fixing the weaknesses.
 
 === CURRENT SCRIPT ===
-{}
+{script_text}
 === END SCRIPT ===
 
 === FEEDBACK ===
 
 STRENGTHS TO PRESERVE:
-{}
+{strengths}
 
 WEAKNESSES TO FIX:
-{}
+{weaknesses}
 
 AI PATTERNS TO ELIMINATE:
-{}
+{ai_fixes}
 
 SPECIFIC CHANGES REQUIRED:
-{}
+{improvements}
 
 === END FEEDBACK ===
 
@@ -346,14 +365,15 @@ Return the complete revised script in the same JSON format:
 }}
 
 IMPORTANT:
-- Target approximately {} words total
+- Target approximately {target_words} words total
 - Do NOT explain your changes. Just return the improved script JSON."#,
-            script.full_text,
-            evaluation.strengths.iter().map(|s| format!("- {}", s)).collect::<Vec<_>>().join("\n"),
-            evaluation.weaknesses.iter().map(|s| format!("- {}", s)).collect::<Vec<_>>().join("\n"),
-            ai_fixes,
-            improvements,
-            target_words
+            dramatic_instruction = dramatic_instruction,
+            script_text = script.full_text,
+            strengths = evaluation.strengths.iter().map(|s| format!("- {}", s)).collect::<Vec<_>>().join("\n"),
+            weaknesses = evaluation.weaknesses.iter().map(|s| format!("- {}", s)).collect::<Vec<_>>().join("\n"),
+            ai_fixes = ai_fixes,
+            improvements = improvements,
+            target_words = target_words
         )
     }
 
@@ -540,15 +560,17 @@ IMPORTANT:
         script: &Script,
         topic_brief: &TopicBrief,
         evaluation: &ScriptEvaluation,
+        temperature: f32,
+        force_dramatic_changes: bool,
     ) -> Result<Script, String> {
         let system_prompt = self.build_system_prompt();
-        let user_prompt = self.build_refinement_prompt(script, topic_brief, evaluation);
+        let user_prompt = self.build_refinement_prompt(script, topic_brief, evaluation, force_dramatic_changes);
 
         let response = self.llm_client.gemini_complete(
             "gemini-3-flash-preview",
             &system_prompt,
             &user_prompt,
-            Some(0.6), // Moderate temperature for refinement
+            Some(temperature),
             Some(8000),
         ).await.map_err(|e| format!("Gemini refinement failed: {}", e))?;
 
@@ -676,16 +698,27 @@ IMPORTANT:
             best.evaluation.overall_score, config.quality_threshold
         );
 
-        // Phase 3: Refinement loop
+        // Phase 3: Refinement loop with stagnation detection
         let mut iteration = 0u32;
+        let mut stagnant_iterations = 0u32;
+        const STAGNATION_THRESHOLD: u32 = 3; // Break if no improvement for 3 iterations
+        const BASE_TEMPERATURE: f32 = 0.6;
+        const MAX_TEMPERATURE: f32 = 1.0;
+        
         while best.evaluation.overall_score < config.quality_threshold
             && iteration < config.max_iterations
             && Instant::now() < deadline
+            && stagnant_iterations < STAGNATION_THRESHOLD
         {
             iteration += 1;
+            
+            // Escalate temperature based on stagnation (0.6 -> 0.7 -> 0.8 -> 0.9 -> 1.0)
+            let temperature = (BASE_TEMPERATURE + (stagnant_iterations as f32 * 0.1)).min(MAX_TEMPERATURE);
+            let force_dramatic = stagnant_iterations >= 2;
+            
             info!(
-                "ScriptWriter: Refinement {}/{} (score: {:.1})",
-                iteration, config.max_iterations, best.evaluation.overall_score
+                "ScriptWriter: Refinement {}/{} (score: {:.1}, temp: {:.1}, stagnant: {})",
+                iteration, config.max_iterations, best.evaluation.overall_score, temperature, stagnant_iterations
             );
 
             // Log top issues being addressed
@@ -695,9 +728,12 @@ IMPORTANT:
             if !best.evaluation.ai_telltale_signs.is_empty() {
                 info!("  AI pattern: {}", best.evaluation.ai_telltale_signs.first().unwrap_or(&String::new()));
             }
+            if force_dramatic {
+                info!("  Mode: DRAMATIC CHANGES (stagnation detected)");
+            }
 
             // Refine based on feedback
-            match self.refine_script(&best.script, topic_brief, &best.evaluation).await {
+            match self.refine_script(&best.script, topic_brief, &best.evaluation, temperature, force_dramatic).await {
                 Ok(refined_script) => {
                     // Evaluate refined script
                     match self.evaluate_script(&refined_script, topic_brief).await {
@@ -723,18 +759,35 @@ IMPORTANT:
                                     candidate_index: None,
                                     evaluation_id: eval_id,
                                 };
+                                // Reset stagnation counter on improvement
+                                stagnant_iterations = 0;
                             } else {
                                 info!(
                                     "ScriptWriter: Refinement did not improve ({:.1} vs {:.1})",
                                     evaluation.overall_score, best.evaluation.overall_score
                                 );
+                                stagnant_iterations += 1;
                             }
                         }
-                        Err(e) => warn!("ScriptWriter: Failed to evaluate refinement: {}", e),
+                        Err(e) => {
+                            warn!("ScriptWriter: Failed to evaluate refinement: {}", e);
+                            stagnant_iterations += 1;
+                        }
                     }
                 }
-                Err(e) => warn!("ScriptWriter: Failed to refine: {}", e),
+                Err(e) => {
+                    warn!("ScriptWriter: Failed to refine: {}", e);
+                    stagnant_iterations += 1;
+                }
             }
+        }
+
+        // Log reason for stopping
+        if stagnant_iterations >= STAGNATION_THRESHOLD {
+            warn!(
+                "ScriptWriter: Stopping refinement due to stagnation ({} iterations without improvement)",
+                stagnant_iterations
+            );
         }
 
         // Mark final as selected
