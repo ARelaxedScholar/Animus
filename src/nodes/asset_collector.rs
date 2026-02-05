@@ -16,6 +16,7 @@ use crate::db;
 use crate::nodes::{AssetFile, AssetManifest, Script, SectionAssets};
 use crate::state_keys;
 use crate::storage::S3Client;
+use crate::utils;
 
 /// Configuration for asset collection
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,7 +209,7 @@ impl AssetCollectorLogic {
         let pexels_response: PexelsVideoResponse = serde_json::from_str(&body)
             .map_err(|e| {
                 // Log the first 500 chars of the response for debugging
-                let preview = if body.len() > 500 { &body[..500] } else { &body };
+                let preview = utils::safe_truncate(&body, 500);
                 format!("Failed to parse Pexels response: {}. Body preview: {}", e, preview)
             })?;
         
@@ -245,13 +246,18 @@ impl AssetCollectorLogic {
             .get(&video_file.link)
             .send()
             .await
-            .map_err(|e| format!("Failed to download video: {}", e))?;
+            .map_err(|e| format!("Failed to start download: {}", e))?;
         
+        if !response.status().is_success() {
+            return Err(format!("Download failed with status: {}", response.status()));
+        }
+
         // Log content length if available
         if let Some(content_length) = response.content_length() {
-            info!("AssetCollector: Video size: {} MB", content_length / 1024 / 1024);
+            info!("AssetCollector: Video size: {:.2} MB", content_length as f64 / 1024.0 / 1024.0);
         }
         
+        // Download the video
         let video_bytes = response.bytes()
             .await
             .map_err(|e| format!("Failed to read video bytes: {}", e))?;
@@ -262,10 +268,11 @@ impl AssetCollectorLogic {
             video_id, section_index, clip_index
         );
 
-        self.s3_client.upload_bytes(&key, video_bytes.to_vec(), "video/mp4").await
+        let data = video_bytes.to_vec();
+        self.s3_client.upload_bytes(&key, data, "video/mp4").await
             .map_err(|e| format!("Failed to upload to S3: {}", e))?;
 
-        info!("AssetCollector: Uploaded {} ({} MB)", key, video_bytes.len() / 1024 / 1024);
+        info!("AssetCollector: Uploaded {}", key);
 
         Ok(AssetFile {
             path: key,
@@ -353,7 +360,7 @@ impl AsyncNodeLogic for AssetCollectorLogic {
         }
         
         info!(
-            "AssetCollector: Finished - {} total clips downloaded",
+            "AssetCollector: Finished - {} total clips downloaded. Transitioning to VideoAssembler...",
             total_clips_downloaded
         );
 

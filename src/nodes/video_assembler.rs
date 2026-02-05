@@ -115,6 +115,7 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
     }
 
     async fn exec(&self, input: NodeValue) -> NodeValue {
+        info!("VideoAssembler: Initializing...");
         let video_id = input.get("video_id")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")

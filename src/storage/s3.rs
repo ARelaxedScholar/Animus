@@ -50,12 +50,21 @@ impl S3Client {
         content_type: &str,
     ) -> Result<(), String> {
         let body = ByteStream::from(data);
+        self.upload_stream(key, body, content_type).await
+    }
 
+    /// Upload a stream to S3
+    pub async fn upload_stream(
+        &self,
+        key: &str,
+        stream: ByteStream,
+        content_type: &str,
+    ) -> Result<(), String> {
         self.client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
-            .body(body)
+            .body(stream)
             .content_type(content_type)
             .send()
             .await

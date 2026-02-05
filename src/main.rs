@@ -7,6 +7,7 @@ use animus::config::Settings;
 use animus::db;
 use animus::flows::VideoProductionFlow;
 use animus::storage::S3Client;
+use futures::FutureExt;
 use orichalcum::NodeValue;
 use orichalcum::llm::Client as LlmClient;
 use sqlx::PgPool;
@@ -167,8 +168,10 @@ async fn main() -> anyhow::Result<()> {
             status.current_stage = Some("scheduler".to_string());
         }
 
-        match flow.inner_mut().run(&mut shared_state).await {
-            Some(action) => {
+        let flow_result = std::panic::AssertUnwindSafe(flow.inner_mut().run(&mut shared_state)).catch_unwind().await;
+        
+        match flow_result {
+            Ok(Some(action)) => {
                 if action == "wait" {
                     info!("Scheduler: No production needed, waiting...");
                     // Wait before checking again (1 hour)
@@ -203,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-            None => {
+            Ok(None) => {
                 info!("Production cycle completed successfully!");
                 
                 {
@@ -214,6 +217,11 @@ async fn main() -> anyhow::Result<()> {
                 }
                 
                 // Small delay before next cycle
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            }
+            Err(e) => {
+                error!("CRITICAL: Production flow panicked! {:?}", e);
+                // Wait before retrying to avoid rapid crash loop
                 tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
             }
         }
