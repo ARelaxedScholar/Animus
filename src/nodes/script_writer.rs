@@ -24,7 +24,7 @@ use tracing::{error, info, warn};
 use crate::config::ScriptImprovementConfig;
 use crate::db;
 use crate::nodes::{
-    Script, ScriptSection, TopicBrief, 
+    Script, ScriptSection, TopicBrief,
     ScriptEvaluation, CriteriaScores, CriterionScore, SpecificImprovement, ScoredScript
 };
 use crate::state_keys;
@@ -288,7 +288,7 @@ Respond with this exact JSON structure:
             .map(|i| format!("- {}: {} → {}", i.location, i.issue, i.suggestion))
             .collect::<Vec<_>>()
             .join("\n");
-        
+
         let ai_fixes = evaluation.ai_telltale_signs
             .iter()
             .map(|s| format!("- {}", s))
@@ -297,7 +297,7 @@ Respond with this exact JSON structure:
 
         let target_words = topic_brief.target_duration_minutes * self.config.words_per_minute;
 
-        format!(r#"Revise this script based on the feedback below. 
+        format!(r#"Revise this script based on the feedback below.
 
 CRITICAL: Maintain what's working (the strengths) while fixing the weaknesses.
 
@@ -508,7 +508,7 @@ IMPORTANT:
         let user_prompt = self.build_user_prompt(topic_brief);
 
         let response = self.llm_client.gemini_complete(
-            "gemini-2.5-flash-preview-05-20",
+            "gemini-3-flash-preview",
             &system_prompt,
             &user_prompt,
             Some(0.8), // Higher temperature for diversity
@@ -545,7 +545,7 @@ IMPORTANT:
         let user_prompt = self.build_refinement_prompt(script, topic_brief, evaluation);
 
         let response = self.llm_client.gemini_complete(
-            "gemini-2.5-flash-preview-05-20",
+            "gemini-3-flash-preview",
             &system_prompt,
             &user_prompt,
             Some(0.6), // Moderate temperature for refinement
@@ -605,13 +605,13 @@ IMPORTANT:
         // Phase 1: Generate initial candidates
         info!("ScriptWriter: Generating {} candidates...", config.candidate_count);
         let mut candidates: Vec<Script> = Vec::new();
-        
+
         for i in 0..config.candidate_count {
             if Instant::now() > deadline {
                 warn!("ScriptWriter: Timeout during candidate generation");
                 break;
             }
-            
+
             match self.generate_script(topic_brief).await {
                 Ok(script) => {
                     info!("ScriptWriter: Candidate {} generated ({} words)", i + 1, script.full_text.split_whitespace().count());
