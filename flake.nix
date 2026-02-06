@@ -37,6 +37,8 @@
             pillow
             numpy
             requests
+            google-auth-oauthlib
+            google-auth-httplib2
           ]
         );
 
