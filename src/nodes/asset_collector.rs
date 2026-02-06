@@ -314,7 +314,7 @@ impl AsyncNodeLogic for AssetCollectorLogic {
                 info!("AssetCollector: Existing manifest found for video {}, skipping collection", script.video_id);
                 return serde_json::json!({
                     "success": true,
-                    "asset_manifest": serde_json::to_value(&existing).unwrap(),
+                    "manifest": serde_json::to_value(&existing).unwrap(),
                     "is_resume": true
                 });
             }

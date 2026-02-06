@@ -671,6 +671,7 @@ impl AsyncNodeLogic for TTSLogic {
             info!("TTS: Existing audio found for video {}, skipping generation", script.video_id);
             return serde_json::json!({
                 "success": true,
+                "audio_path": existing.audio_path,
                 "audio_timing": serde_json::to_value(&existing).unwrap(),
                 "is_resume": true
             });

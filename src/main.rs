@@ -105,6 +105,9 @@ async fn main() -> anyhow::Result<()> {
                 shared_state_map.insert(animus::state_keys::SCRIPT.to_string(), script);
             }
             if let Some(timing) = active_video.audio_timing {
+                if let Some(path) = timing.get("audio_path").cloned() {
+                    shared_state_map.insert(animus::state_keys::AUDIO_PATH.to_string(), path);
+                }
                 shared_state_map.insert(animus::state_keys::AUDIO_TIMING.to_string(), timing);
             }
             if let Some(manifest) = active_video.asset_manifest {
