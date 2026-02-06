@@ -838,11 +838,36 @@ impl AsyncNodeLogic for ScriptWriterLogic {
             .unwrap_or(serde_json::json!(null));
 
         serde_json::json!({
-            "topic_brief": topic_brief
+            "topic_brief": topic_brief,
+            "script": shared.get(state_keys::SCRIPT).cloned(),
+            "manual_script": shared.get("manual_script").cloned(),
+            "video_id": shared.get(state_keys::VIDEO_ID).cloned(),
         })
     }
 
     async fn exec(&self, input: NodeValue) -> NodeValue {
+        // CASE 0: Bypass if manual script is provided
+        if let Some(manual_script) = input.get("manual_script").filter(|v| !v.is_null()) {
+            info!("ScriptWriter: Manual script detected, bypassing generation");
+            return serde_json::json!({
+                "success": true,
+                "script": manual_script,
+                "video_id": input.get("video_id"),
+                "is_manual": true
+            });
+        }
+
+        // CASE 1: Resume if script already exists
+        if let Some(existing_script) = input.get("script").and_then(|v| serde_json::from_value::<Script>(v.clone()).ok()) {
+            info!("ScriptWriter: Resuming with existing script for video {}", existing_script.video_id);
+            return serde_json::json!({
+                "success": true,
+                "script": serde_json::to_value(&existing_script).unwrap(),
+                "video_id": existing_script.video_id.to_string(),
+                "is_resume": true
+            });
+        }
+
         // Parse the topic brief
         let topic_brief: TopicBrief = match input.get("topic_brief") {
             Some(tb) => match serde_json::from_value(tb.clone()) {
@@ -897,6 +922,37 @@ impl AsyncNodeLogic for ScriptWriterLogic {
         _prep_res: NodeValue,
         exec_res: NodeValue,
     ) -> Option<String> {
+        // Check for errors
+        if let Some(error) = exec_res.get("error").and_then(|v| v.as_str()) {
+            error!("ScriptWriter node failed: {}", error);
+            shared.insert(state_keys::ERROR.to_string(), serde_json::json!(error));
+
+            // Mark video as failed in database
+            if let Some(vid) = shared.get(state_keys::VIDEO_ID).and_then(|v| v.as_str()) {
+                if let Ok(video_id) = uuid::Uuid::parse_str(vid) {
+                    let _ = db::mark_video_failed(&self.db_pool, video_id, "script_writer", error).await;
+                }
+            }
+
+            return Some("error".to_string());
+        }
+
+        // Handle resume bypass
+        if exec_res.get("is_resume").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return Some("default".to_string());
+        }
+
+        // Handle manual bypass
+        if exec_res.get("is_manual").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if let Some(vid) = exec_res.get("video_id").and_then(|v| v.as_str()) {
+                shared.insert(state_keys::VIDEO_ID.to_string(), serde_json::json!(vid));
+            }
+            if let Some(script) = exec_res.get("script") {
+                shared.insert(state_keys::SCRIPT.to_string(), script.clone());
+            }
+            return Some("default".to_string());
+        }
+
         // Check for errors
         if let Some(error) = exec_res.get("error").and_then(|v| v.as_str()) {
             error!("ScriptWriter node failed: {}", error);

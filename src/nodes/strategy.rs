@@ -323,11 +323,41 @@ impl AsyncNodeLogic for StrategyLogic {
             "video_id": video_id,
             "source_focus": source_focus,
             "seed_topic": seed_topic,
-            "scheduled_publish": scheduled_publish
+            "topic_brief": shared.get(state_keys::TOPIC_BRIEF).cloned(),
+            "manual_script": shared.get("manual_script").cloned(),
+            "scheduled_publish": scheduled_publish,
+            "is_autonomous": shared.get("is_autonomous").cloned().unwrap_or(serde_json::json!(true))
         })
     }
 
     async fn exec(&self, input: NodeValue) -> NodeValue {
+        let is_autonomous = input.get("is_autonomous").and_then(|v| v.as_bool()).unwrap_or(true);
+
+        // CASE 0: Bypass if manual script is provided
+        if let Some(manual_script) = input.get("manual_script").filter(|v| !v.is_null()) {
+            info!("Strategy: Manual script detected, bypassing generation");
+            return serde_json::json!({
+                "success": true,
+                "manual_script": manual_script,
+                "video_id": input.get("video_id"),
+                "scheduled_publish": input.get("scheduled_publish"),
+                "is_manual": true,
+                "is_autonomous": false
+            });
+        }
+
+        // CASE 1: Resume if topic brief already exists
+        if let Some(existing_brief) = input.get("topic_brief").and_then(|v| serde_json::from_value::<TopicBrief>(v.clone()).ok()) {
+            info!("Strategy: Resuming with existing topic brief: {}", existing_brief.topic);
+            return serde_json::json!({
+                "success": true,
+                "topic_data": serde_json::to_value(&existing_brief).unwrap(),
+                "video_id": existing_brief.video_id.to_string(),
+                "is_resume": true,
+                "is_autonomous": existing_brief.is_autonomous
+            });
+        }
+
         let source_focus = input.get("source_focus")
             .and_then(|v| v.as_str())
             .unwrap_or("Bible");
@@ -370,7 +400,8 @@ impl AsyncNodeLogic for StrategyLogic {
                     "success": true,
                     "topic_data": parsed,
                     "video_id": input.get("video_id"),
-                    "scheduled_publish": input.get("scheduled_publish")
+                    "scheduled_publish": input.get("scheduled_publish"),
+                    "is_autonomous": is_autonomous
                 })
             }
             Err(e) => {
@@ -389,19 +420,45 @@ impl AsyncNodeLogic for StrategyLogic {
         _prep_res: NodeValue,
         exec_res: NodeValue,
     ) -> Option<String> {
+        // Handle manual bypass
+        if exec_res.get("is_manual").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if let Some(video_id) = exec_res.get("video_id").and_then(|v| v.as_str()) {
+                shared.insert(state_keys::VIDEO_ID.to_string(), serde_json::json!(video_id));
+            }
+            // For manual scripts, we create a dummy topic brief or just skip it
+            // We'll create a simple one for DB purposes
+            let video_id = exec_res.get("video_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .unwrap_or_else(Uuid::new_v4);
+
+            let topic_brief = TopicBrief {
+                video_id,
+                topic: "Manual Script Video".to_string(),
+                description: "User-provided script".to_string(),
+                target_duration_minutes: 0,
+                primary_source: WisdomSource::Philosophy { author: "User".to_string() },
+                secondary_sources: vec![],
+                target_keywords: vec![],
+                hook_angle: "Manual".to_string(),
+                scheduled_publish: None,
+                is_autonomous: false,
+            };
+            shared.insert(state_keys::TOPIC_BRIEF.to_string(), serde_json::to_value(&topic_brief).unwrap());
+            
+            return Some("default".to_string());
+        }
+
         // Check for errors
         if let Some(error) = exec_res.get("error").and_then(|v| v.as_str()) {
             error!("Strategy node failed: {}", error);
             shared.insert(state_keys::ERROR.to_string(), serde_json::json!(error));
-            
-            // Try to mark video as failed in database if we have an ID
-            if let Some(vid) = shared.get(state_keys::VIDEO_ID).and_then(|v| v.as_str()) {
-                if let Ok(video_id) = Uuid::parse_str(vid) {
-                    let _ = db::mark_video_failed(&self.db_pool, video_id, "strategy", error).await;
-                }
-            }
-            
             return Some("error".to_string());
+        }
+
+        // Handle resume bypass
+        if exec_res.get("is_resume").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return Some("default".to_string());
         }
 
         // Extract topic data
@@ -412,6 +469,8 @@ impl AsyncNodeLogic for StrategyLogic {
                 return Some("error".to_string());
             }
         };
+
+        let is_autonomous = exec_res.get("is_autonomous").and_then(|v| v.as_bool()).unwrap_or(true);
 
         let video_id = exec_res
             .get("video_id")
@@ -483,6 +542,7 @@ impl AsyncNodeLogic for StrategyLogic {
             target_keywords,
             hook_angle: topic_data.get("hook_angle").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             scheduled_publish,
+            is_autonomous,
         };
 
         info!(
@@ -505,6 +565,7 @@ impl AsyncNodeLogic for StrategyLogic {
         let video = Video::new_production(
             video_id,
             serde_json::to_value(&topic_brief).unwrap_or(serde_json::json!(null)),
+            scheduled_publish,
         );
         if let Err(e) = db::insert_video(&self.db_pool, &video).await {
             error!("Failed to persist video to database: {}", e);

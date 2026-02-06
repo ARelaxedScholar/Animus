@@ -1,8 +1,26 @@
 //! Database queries for video persistence
 
 use super::models::{Video, VideoStatus};
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
+
+/// Get the most recent video with 'producing' status
+pub async fn get_active_production(pool: &PgPool) -> Result<Option<Video>, sqlx::Error> {
+    sqlx::query_as::<_, Video>("SELECT * FROM videos WHERE status = 'producing' ORDER BY updated_at DESC LIMIT 1")
+        .fetch_optional(pool)
+        .await
+}
+
+/// Get the latest scheduled time across all autonomous videos
+pub async fn get_latest_scheduled_time(pool: &PgPool) -> Result<Option<DateTime<Utc>>, sqlx::Error> {
+    let row: Option<(Option<DateTime<Utc>>,)> = sqlx::query_as(
+        "SELECT scheduled_at FROM videos WHERE topic_brief->>'is_autonomous' = 'true' ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|r| r.0))
+}
 
 /// Get a video by ID
 pub async fn get_video(pool: &PgPool, id: Uuid) -> Result<Option<Video>, sqlx::Error> {

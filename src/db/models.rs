@@ -69,7 +69,11 @@ impl Video {
     }
 
     /// Create a new video record for a production run
-    pub fn new_production(id: Uuid, topic_brief: serde_json::Value) -> Self {
+    pub fn new_production(
+        id: Uuid,
+        topic_brief: serde_json::Value,
+        scheduled_at: Option<DateTime<Utc>>,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id,
@@ -83,7 +87,7 @@ impl Video {
             thumbnail_path: None,
             youtube_id: None,
             youtube_url: None,
-            scheduled_at: None,
+            scheduled_at,
             published_at: None,
             error_message: None,
             failed_at_stage: None,

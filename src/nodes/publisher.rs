@@ -203,8 +203,14 @@ impl PublisherLogic {
             .map_err(|e| format!("Thumbnail upload failed: {}", e))?;
 
         if !response.status().is_success() {
-            let error = response.text().await.unwrap_or_default();
-            return Err(format!("Thumbnail upload error: {}", error));
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            
+            if status == reqwest::StatusCode::FORBIDDEN && error_text.contains("thumbnail") {
+                return Err("PERMISSION_DENIED: Custom thumbnails are not enabled for this account. Visit youtube.com/verify to fix this.".to_string());
+            }
+            
+            return Err(format!("Thumbnail upload error {}: {}", status, error_text));
         }
 
         Ok(())
@@ -227,11 +233,13 @@ impl AsyncNodeLogic for PublisherLogic {
             "video_path": video_path,
             "thumbnail_path": thumbnail_path,
             "seo_metadata": seo_metadata,
-            "scheduled_publish": scheduled_publish
+            "scheduled_publish": scheduled_publish,
+            "is_autonomous": shared.get("is_autonomous").cloned().unwrap_or(serde_json::json!(true))
         })
     }
 
     async fn exec(&self, input: NodeValue) -> NodeValue {
+        let is_autonomous = input.get("is_autonomous").and_then(|v| v.as_bool()).unwrap_or(true);
         let video_path = match input.get("video_path").and_then(|v| v.as_str()) {
             Some(p) => p.to_string(),
             None => return serde_json::json!({ "error": "No video path provided" }),
@@ -278,9 +286,16 @@ impl AsyncNodeLogic for PublisherLogic {
         // Upload thumbnail if available
         if let Some(thumb_path) = thumbnail_path {
             if let Ok(thumb_data) = self.s3_client.download_bytes(thumb_path).await {
-                if let Err(e) = self.set_thumbnail(&access_token, &youtube_video_id, thumb_data).await {
-                    warn!("Failed to set thumbnail: {}", e);
-                    // Continue anyway - thumbnail isn't critical
+                match self.set_thumbnail(&access_token, &youtube_video_id, thumb_data).await {
+                    Ok(_) => info!("Publisher: Custom thumbnail uploaded successfully"),
+                    Err(e) if e.contains("PERMISSION_DENIED") => {
+                        warn!("Publisher: {}", e);
+                        info!("Publisher: Continuing without custom thumbnail...");
+                    }
+                    Err(e) => {
+                        warn!("Failed to set thumbnail: {}", e);
+                        // Continue anyway - thumbnail isn't critical
+                    }
                 }
             }
         }
@@ -289,7 +304,8 @@ impl AsyncNodeLogic for PublisherLogic {
             "success": true,
             "youtube_video_id": youtube_video_id,
             "youtube_url": format!("https://www.youtube.com/watch?v={}", youtube_video_id),
-            "title": seo_metadata.title
+            "title": seo_metadata.title,
+            "is_autonomous": is_autonomous
         })
     }
 
@@ -337,16 +353,21 @@ impl AsyncNodeLogic for PublisherLogic {
 
         // Mark production as complete
         shared.insert("production_in_progress".to_string(), serde_json::json!(false));
-        shared.insert(
-            "last_publish_time".to_string(),
-            serde_json::json!(chrono::Utc::now().to_rfc3339()),
-        );
 
-        // Increment video count
-        let current_count = shared.get("total_video_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        shared.insert("total_video_count".to_string(), serde_json::json!(current_count + 1));
+        let is_autonomous = exec_res.get("is_autonomous").and_then(|v| v.as_bool()).unwrap_or(true);
+        
+        if is_autonomous {
+            shared.insert(
+                "last_publish_time".to_string(),
+                serde_json::json!(chrono::Utc::now().to_rfc3339()),
+            );
+
+            // Increment video count
+            let current_count = shared.get("total_video_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            shared.insert("total_video_count".to_string(), serde_json::json!(current_count + 1));
+        }
 
         // Mark video as published in database
         if let Some(vid) = shared.get(state_keys::VIDEO_ID).and_then(|v| v.as_str()) {

@@ -49,7 +49,12 @@ pub struct TopicBrief {
     pub hook_angle: String,
     /// Scheduled publish time
     pub scheduled_publish: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether this was an automatically scheduled video
+    #[serde(default = "default_true")]
+    pub is_autonomous: bool,
 }
+
+fn default_true() -> bool { true }
 
 /// Wisdom source categories
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

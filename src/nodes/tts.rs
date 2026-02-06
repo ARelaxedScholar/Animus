@@ -530,9 +530,12 @@ impl AsyncNodeLogic for TTSLogic {
             .get(state_keys::SCRIPT)
             .cloned()
             .unwrap_or(serde_json::json!(null));
+        
+        let existing_timing = shared.get(state_keys::AUDIO_TIMING).cloned();
 
         serde_json::json!({
-            "script": script
+            "script": script,
+            "existing_timing": existing_timing
         })
     }
 
@@ -553,6 +556,16 @@ impl AsyncNodeLogic for TTSLogic {
                 });
             }
         };
+
+        // CHECK FOR RESUME
+        if let Some(existing) = input.get("existing_timing").and_then(|v| serde_json::from_value::<AudioTiming>(v.clone()).ok()) {
+            info!("TTS: Existing audio found for video {}, skipping generation", script.video_id);
+            return serde_json::json!({
+                "success": true,
+                "audio_timing": serde_json::to_value(&existing).unwrap(),
+                "is_resume": true
+            });
+        }
 
         info!(
             "TTS: Generating audio for video {} using {:?}",

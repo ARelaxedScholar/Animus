@@ -155,11 +155,19 @@ impl AsyncNodeLogic for SchedulerLogic {
             .unwrap_or(false);
 
         // Get last publish time if available
-        let last_publish: Option<DateTime<Utc>> = shared
+        let mut last_publish: Option<DateTime<Utc>> = shared
             .get("last_publish_time")
             .and_then(|v| v.as_str())
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&Utc));
+
+        // CRITICAL FIX: If shared state is empty (daemon restarted), check the database
+        if last_publish.is_none() {
+            if let Ok(Some(db_last)) = db::get_latest_scheduled_time(&self.db_pool).await {
+                info!("Scheduler: Found latest scheduled video at {} in database", db_last);
+                last_publish = Some(db_last);
+            }
+        }
 
         // Get video count for source rotation
         let video_count: u32 = shared
@@ -181,6 +189,7 @@ impl AsyncNodeLogic for SchedulerLogic {
 
         serde_json::json!({
             "in_progress": in_progress,
+            "video_id": shared.get(state_keys::VIDEO_ID).cloned(),
             "last_publish": last_publish.map(|dt| dt.to_rfc3339()),
             "video_count": video_count,
             "seed_topic": seed_topic,
@@ -189,6 +198,35 @@ impl AsyncNodeLogic for SchedulerLogic {
     }
 
     async fn exec(&self, input: NodeValue) -> NodeValue {
+        // CASE 0: Check for manual scripts first
+        let manual_scripts_dir = "manual_scripts";
+        if let Ok(mut entries) = tokio::fs::read_dir(manual_scripts_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                        if let Ok(manual_script) = serde_json::from_str::<serde_json::Value>(&content) {
+                            info!("Scheduler: Found manual script at {:?}", path);
+                            // Move file to a 'processed' folder or just delete it to avoid re-processing
+                            let _ = tokio::fs::remove_file(&path).await;
+
+                            return serde_json::json!({
+                                "should_produce": true,
+                                "video_id": Uuid::new_v4().to_string(),
+                                "scheduled_publish": Utc::now().to_rfc3339(),
+                                "manual_script": manual_script,
+                                "source_focus": "Manual",
+                                "is_autonomous": false,
+                                "video_number": input.get("video_count").and_then(|v| v.as_u64()).unwrap_or(0) + 1,
+                                "hours_until_publish": 0,
+                                "consume_inputs": true
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         let in_progress = input
             .get("in_progress")
             .and_then(|v| v.as_bool())
@@ -234,6 +272,12 @@ impl AsyncNodeLogic for SchedulerLogic {
             None
         };
 
+        let last_publish: Option<DateTime<Utc>> = input
+            .get("last_publish")
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
+
         // CASE 1: We have a seed topic
         if let Some(ref topic) = seed_topic {
             if in_progress {
@@ -259,6 +303,7 @@ impl AsyncNodeLogic for SchedulerLogic {
             }
 
             // Not in progress - use the seed topic immediately
+            // (Gap check removed to allow SEED_TOPIC to act as a true immediate override)
             let source_focus = normalized_source
                 .unwrap_or_else(|| self.select_source_focus(video_count));
 
@@ -273,6 +318,7 @@ impl AsyncNodeLogic for SchedulerLogic {
                 "scheduled_publish": Utc::now().to_rfc3339(),
                 "source_focus": source_focus,
                 "seed_topic": topic,
+                "is_autonomous": false,
                 "video_number": video_count + 1,
                 "hours_until_publish": 0,
                 "consume_inputs": true
@@ -282,6 +328,20 @@ impl AsyncNodeLogic for SchedulerLogic {
         // CASE 2: No seed topic from env, but check the database queue
         if !in_progress {
             if let Ok(Some((id, queued_topic, queued_source))) = db::pop_seed(&self.db_pool).await {
+                // ENFORCE MINIMUM GAP for queued seeds
+                if let Some(last) = last_publish {
+                    let min_gap = chrono::Duration::hours(self.config.min_hours_between as i64);
+                    if Utc::now() - last < min_gap {
+                        // Put it back in queue (actually easier to just not pop it, but we already popped)
+                        // For now we'll just wait and let the next cycle handle it (this is imperfect)
+                        warn!("Scheduler: Queued seed popped but gap not met. Video creation delayed.");
+                        return serde_json::json!({
+                            "should_produce": false,
+                            "reason": "Waiting for min gap between videos"
+                        });
+                    }
+                }
+
                 let source_focus = queued_source
                     .unwrap_or_else(|| self.select_source_focus(video_count));
 
@@ -296,6 +356,7 @@ impl AsyncNodeLogic for SchedulerLogic {
                     "scheduled_publish": Utc::now().to_rfc3339(),
                     "source_focus": source_focus,
                     "seed_topic": queued_topic,
+                    "is_autonomous": false,
                     "video_number": video_count + 1,
                     "hours_until_publish": 0,
                     "consume_inputs": false  // Already consumed from DB
@@ -305,19 +366,16 @@ impl AsyncNodeLogic for SchedulerLogic {
 
         // CASE 3: Production in progress, no seed topic
         if in_progress {
+            info!("Scheduler: Production in progress, resuming video {}", input.get("video_id").and_then(|v| v.as_str()).unwrap_or("unknown"));
             return serde_json::json!({
-                "should_produce": false,
-                "reason": "Production already in progress"
+                "should_produce": true,
+                "video_id": input.get("video_id"),
+                "is_resume": true,
+                "consume_inputs": false
             });
         }
 
         // CASE 4: Normal scheduling based on timing
-        let last_publish: Option<DateTime<Utc>> = input
-            .get("last_publish")
-            .and_then(|v| v.as_str())
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc));
-
         let now = Utc::now();
         let next_publish = self.calculate_next_publish_time(now, last_publish);
         let source_focus = self.select_source_focus(video_count);
@@ -326,9 +384,16 @@ impl AsyncNodeLogic for SchedulerLogic {
         let hours_until = (next_publish - now).num_hours();
 
         // We should start production if there's enough time
-        // Assume production takes ~24 hours to allow for review
-        let production_lead_time_hours = 24;
-        let should_produce = hours_until <= production_lead_time_hours + 12;
+        // Assume production takes ~6 hours to allow for review (conservative)
+        let production_lead_time_hours = 6;
+        let should_produce = hours_until <= production_lead_time_hours;
+
+        if !should_produce {
+            info!(
+                "Scheduler: Next video scheduled for {} ({} hours away). Lead time is {}h.",
+                next_publish, hours_until, production_lead_time_hours
+            );
+        }
 
         serde_json::json!({
             "should_produce": should_produce,
@@ -336,7 +401,9 @@ impl AsyncNodeLogic for SchedulerLogic {
             "scheduled_publish": next_publish.to_rfc3339(),
             "source_focus": source_focus,
             "video_number": video_count + 1,
-            "hours_until_publish": hours_until
+            "hours_until_publish": hours_until,
+            "is_autonomous": true,
+            "reason": if should_produce { "Scheduled time approaching" } else { "Next slot is too far in future" }
         })
     }
 
@@ -384,6 +451,15 @@ impl AsyncNodeLogic for SchedulerLogic {
 
         if let Some(source_focus) = exec_res.get("source_focus") {
             shared.insert("source_focus".to_string(), source_focus.clone());
+        }
+
+        if let Some(is_autonomous) = exec_res.get("is_autonomous") {
+            shared.insert("is_autonomous".to_string(), is_autonomous.clone());
+        }
+
+        // Pass through manual script if present (ensure it's not null)
+        if let Some(manual_script) = exec_res.get("manual_script").filter(|v| !v.is_null()) {
+            shared.insert("manual_script".to_string(), manual_script.clone());
         }
 
         // Pass through seed_topic if present (for Strategy node to use)

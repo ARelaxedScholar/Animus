@@ -49,7 +49,7 @@ struct PexelsVideoResponse {
     error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 struct PexelsVideo {
     id: u64,
     #[serde(default)]
@@ -58,7 +58,7 @@ struct PexelsVideo {
     video_files: Option<Vec<PexelsVideoFile>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 struct PexelsVideoFile {
     #[serde(default)]
     link: Option<String>,
@@ -294,7 +294,12 @@ impl AsyncNodeLogic for AssetCollectorLogic {
         shared: &HashMap<String, NodeValue>,
     ) -> NodeValue {
         let script = shared.get(state_keys::SCRIPT).cloned().unwrap_or(serde_json::json!(null));
-        serde_json::json!({ "script": script })
+        let existing_manifest = shared.get(state_keys::ASSET_MANIFEST).cloned();
+        
+        serde_json::json!({ 
+            "script": script,
+            "existing_manifest": existing_manifest
+        })
     }
 
     async fn exec(&self, input: NodeValue) -> NodeValue {
@@ -302,6 +307,18 @@ impl AsyncNodeLogic for AssetCollectorLogic {
             Some(s) => s,
             None => return serde_json::json!({ "error": "No script provided" }),
         };
+
+        // CHECK FOR RESUME
+        if let Some(existing) = input.get("existing_manifest").and_then(|v| serde_json::from_value::<AssetManifest>(v.clone()).ok()) {
+            if !existing.section_assets.is_empty() {
+                info!("AssetCollector: Existing manifest found for video {}, skipping collection", script.video_id);
+                return serde_json::json!({
+                    "success": true,
+                    "asset_manifest": serde_json::to_value(&existing).unwrap(),
+                    "is_resume": true
+                });
+            }
+        }
 
         info!("AssetCollector: Gathering assets for video {}", script.video_id);
 
@@ -521,9 +538,9 @@ mod tests {
         let response: PexelsVideoResponse = serde_json::from_str(json).unwrap();
         assert_eq!(response.videos.len(), 1);
         assert_eq!(response.videos[0].id, 12345);
-        assert_eq!(response.videos[0].duration, 30);
-        assert_eq!(response.videos[0].video_files.len(), 1);
-        assert_eq!(response.videos[0].video_files[0].width, 1920);
+        assert_eq!(response.videos[0].duration, Some(30));
+        assert_eq!(response.videos[0].video_files.as_ref().unwrap().len(), 1);
+        assert_eq!(response.videos[0].video_files.as_ref().unwrap()[0].width, Some(1920));
     }
 
     #[test]
@@ -548,8 +565,8 @@ mod tests {
         let response: PexelsVideoResponse = serde_json::from_str(json).unwrap();
         assert_eq!(response.videos.len(), 1);
         assert_eq!(response.videos[0].id, 99999);
-        assert_eq!(response.videos[0].duration, 0); // default
-        assert_eq!(response.videos[0].video_files.len(), 0); // default empty
+        assert!(response.videos[0].duration.is_none()); 
+        assert!(response.videos[0].video_files.is_none());
     }
 
     #[test]
@@ -609,8 +626,8 @@ mod tests {
         let response: PexelsVideoResponse = serde_json::from_str(json).unwrap();
         assert_eq!(response.videos.len(), 1);
         assert_eq!(response.videos[0].id, 11111);
-        assert_eq!(response.videos[0].duration, 45);
-        assert_eq!(response.videos[0].video_files[0].width, 1920);
-        assert!(response.videos[0].video_files[0].link.contains("vimeo"));
+        assert_eq!(response.videos[0].duration, Some(45));
+        assert_eq!(response.videos[0].video_files.as_ref().unwrap()[0].width, Some(1920));
+        assert!(response.videos[0].video_files.as_ref().unwrap()[0].link.as_ref().unwrap().contains("vimeo"));
     }
 }

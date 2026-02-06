@@ -47,26 +47,26 @@ pub struct LlmConfig {
 pub struct TtsConfig {
     /// TTS provider: elevenlabs, qwen3, openai, coqui, piper
     pub provider: TTSProvider,
-    
+
     // ElevenLabs settings
     pub elevenlabs_api_key: Option<String>,
     pub elevenlabs_voice_id: Option<String>,
     pub elevenlabs_model_id: Option<String>,
-    
+
     // Qwen3-TTS settings (self-hosted, OpenAI-compatible)
     pub qwen3_api_url: Option<String>,
     pub qwen3_api_key: Option<String>,
     pub qwen3_voice: Option<String>,
-    
+
     // OpenAI TTS settings
     pub openai_api_key: Option<String>,
     pub openai_voice: Option<String>,
     pub openai_model: Option<String>,
-    
+
     // Local TTS settings (Coqui/Piper)
     pub local_model_path: Option<String>,
     pub local_speaker_id: Option<String>,
-    
+
     // Common settings
     pub stability: f32,
     pub similarity_boost: f32,

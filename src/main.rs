@@ -10,7 +10,6 @@ use animus::storage::S3Client;
 use futures::FutureExt;
 use orichalcum::NodeValue;
 use orichalcum::llm::Client as LlmClient;
-use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -71,23 +70,61 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Migration failed: {}", e))?;
     info!("Database migrations applied");
 
-    // CLEANUP: Reset any 'producing' videos from previous crashed runs
-    if let Err(e) = sqlx::query!(
-        "UPDATE videos SET status = 'failed', error_message = 'Daemon restarted during production', failed_at_stage = 'unknown' WHERE status = 'producing'"
-    ).execute(&*db_pool).await {
-        warn!("Failed to cleanup stale 'producing' videos: {}", e);
+    // CLEANUP: Reset any 'producing' videos that aren't actually running
+    // (We'll do hydration right after this)
+    
+    // Initialize shared state
+    let mut shared_state_map: HashMap<String, NodeValue> = HashMap::new();
+    
+    // Check for seed topic (from environment variable)
+    if let Ok(seed_topic) = std::env::var("SEED_TOPIC") {
+        if !seed_topic.trim().is_empty() {
+            info!("Seed topic configured: {}", seed_topic);
+            shared_state_map.insert("seed_topic".to_string(), serde_json::json!(seed_topic));
+        }
     }
 
-    // Log queued seeds from previous session
-    match db::get_queue_length(&db_pool).await {
-        Ok(count) if count > 0 => {
-            info!("Found {} seed(s) queued from previous session", count);
-        }
-        Ok(_) => {}
-        Err(e) => {
-            warn!("Failed to check seed queue: {}", e);
+    // Check for source focus override (from environment variable)
+    if let Ok(source_focus) = std::env::var("SOURCE_FOCUS") {
+        if !source_focus.trim().is_empty() {
+            info!("Source focus override: {}", source_focus);
+            shared_state_map.insert("source_focus_override".to_string(), serde_json::json!(source_focus));
         }
     }
+
+    // HYDRATION: Check for active production to resume
+    match db::get_active_production(&db_pool).await {
+        Ok(Some(active_video)) => {
+            info!("🔄 Resuming active production: {}", active_video.id);
+            shared_state_map.insert(animus::state_keys::VIDEO_ID.to_string(), serde_json::json!(active_video.id.to_string()));
+            
+            if let Some(brief) = active_video.topic_brief {
+                shared_state_map.insert(animus::state_keys::TOPIC_BRIEF.to_string(), brief);
+            }
+            if let Some(script) = active_video.script {
+                shared_state_map.insert(animus::state_keys::SCRIPT.to_string(), script);
+            }
+            if let Some(timing) = active_video.audio_timing {
+                shared_state_map.insert(animus::state_keys::AUDIO_TIMING.to_string(), timing);
+            }
+            if let Some(manifest) = active_video.asset_manifest {
+                shared_state_map.insert(animus::state_keys::ASSET_MANIFEST.to_string(), manifest);
+            }
+            
+            shared_state_map.insert("production_in_progress".to_string(), serde_json::json!(true));
+        }
+        Ok(None) => {
+            // Clean up any stale videos that might have been marked as producing but were lost
+            if let Err(e) = sqlx::query!(
+                "UPDATE videos SET status = 'failed', error_message = 'Stale production cleared at startup', failed_at_stage = 'unknown' WHERE status = 'producing'"
+            ).execute(&*db_pool).await {
+                warn!("Failed to cleanup stale 'producing' videos: {}", e);
+            }
+        }
+        Err(e) => warn!("Failed to check for active production: {}", e),
+    }
+
+    let shared_state_arc = Arc::new(RwLock::new(shared_state_map));
 
     // Create the production flow
     let mut flow = VideoProductionFlow::new(&settings, llm_client, s3_client, db_pool.clone());
@@ -105,9 +142,12 @@ async fn main() -> anyhow::Result<()> {
             paused: false,
             current_video_id: None,
             current_stage: None,
+            next_scheduled_video: None,
+            hours_until_next: None,
             videos_produced: 0,
             last_error: None,
         })),
+        shared_state: shared_state_arc.clone(),
     };
 
     // Start the control API server
@@ -121,33 +161,12 @@ async fn main() -> anyhow::Result<()> {
         axum::serve(listener, api_router.into_make_service()).await.ok()
     });
 
-    // Initialize shared state
-    let mut shared_state: HashMap<String, NodeValue> = HashMap::new();
-    
-    // Check for seed topic (from environment variable)
-    if let Ok(seed_topic) = std::env::var("SEED_TOPIC") {
-        if !seed_topic.trim().is_empty() {
-            info!("Seed topic configured: {}", seed_topic);
-            shared_state.insert("seed_topic".to_string(), serde_json::json!(seed_topic));
-        }
-    }
-
-    // Check for source focus override (from environment variable)
-    if let Ok(source_focus) = std::env::var("SOURCE_FOCUS") {
-        if !source_focus.trim().is_empty() {
-            info!("Source focus override: {}", source_focus);
-            shared_state.insert("source_focus_override".to_string(), serde_json::json!(source_focus));
-        }
-    }
-
     info!("");
     info!("🚀 Daemon starting main loop");
     info!("   Control API: http://localhost:{}", settings.control_api_port);
     info!("   POST /pause    - Pause production");
     info!("   POST /resume   - Resume production");
     info!("   POST /shutdown - Graceful shutdown");
-    info!("");
-    info!("   Env vars: SEED_TOPIC, SOURCE_FOCUS (Bible, Stoicism, Philosophy, Biography, Psychology)");
     info!("");
 
     // Main production loop
@@ -173,9 +192,32 @@ async fn main() -> anyhow::Result<()> {
         {
             let mut status = app_state.current_status.write().await;
             status.current_stage = Some("scheduler".to_string());
+            
+            // Update next scheduled time from database
+            if let Ok(Some(next)) = db::get_latest_scheduled_time(&db_pool).await {
+                let now = chrono::Utc::now();
+                status.next_scheduled_video = Some(next.to_rfc3339());
+                status.hours_until_next = Some((next - now).num_hours());
+            }
         }
 
-        let flow_result = std::panic::AssertUnwindSafe(flow.inner_mut().run(&mut shared_state)).catch_unwind().await;
+        // Get exclusive access to shared state for this run
+        let mut shared_state = shared_state_arc.write().await;
+        
+        // Ensure per-run state is clean IF not resuming
+        let is_resuming = shared_state.get("production_in_progress")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if !is_resuming {
+            shared_state.remove("error");
+            shared_state.remove("manual_script");
+            // Note: seed_topic and source_focus_override are cleared at the end of the loop
+            // but we ensure production_in_progress is false if we are not resuming
+            shared_state.insert("production_in_progress".to_string(), serde_json::json!(false));
+        }
+
+        let flow_result = std::panic::AssertUnwindSafe(flow.inner_mut().run(&mut *shared_state)).catch_unwind().await;
         
         match flow_result {
             Ok(Some(action)) => {
@@ -198,10 +240,15 @@ async fn main() -> anyhow::Result<()> {
                     {
                         let mut status = app_state.current_status.write().await;
                         status.last_error = Some(error.to_string());
+                        status.current_video_id = None;
+                        status.current_stage = None;
                     }
                     
-                    // Wait before retrying (5 minutes)
-                    tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
+                    // Reset resume flags
+                    shared_state.insert("production_in_progress".to_string(), serde_json::json!(false));
+                    
+                    // Wait before retrying (10 minutes)
+                    tokio::time::sleep(tokio::time::Duration::from_secs(600)).await;
                 } else {
                     info!("Production cycle completed with action: {}", action);
                     
@@ -211,6 +258,12 @@ async fn main() -> anyhow::Result<()> {
                         status.current_video_id = None;
                         status.current_stage = None;
                     }
+                    
+                    // Clear state for next run
+                    shared_state.insert("production_in_progress".to_string(), serde_json::json!(false));
+                    
+                    // Small delay before next cycle
+                    tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
                 }
             }
             Ok(None) => {
@@ -223,18 +276,25 @@ async fn main() -> anyhow::Result<()> {
                     status.current_stage = None;
                 }
                 
+                // Clear state
+                shared_state.insert("production_in_progress".to_string(), serde_json::json!(false));
+                
                 // Small delay before next cycle
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
             }
             Err(e) => {
                 error!("CRITICAL: Production flow panicked! {:?}", e);
+                // Reset state
+                shared_state.insert("production_in_progress".to_string(), serde_json::json!(false));
                 // Wait before retrying to avoid rapid crash loop
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(600)).await;
             }
         }
 
-        // Clear any one-time seed topic
+        // Clear one-time inputs
         shared_state.remove("seed_topic");
+        shared_state.remove("source_focus_override");
+        shared_state.remove("manual_script");
     }
 
     // Clean shutdown

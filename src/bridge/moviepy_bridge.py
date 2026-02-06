@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-MoviePy Bridge for Animus - Memory Efficient Version
+MoviePy Bridge for Animus - Timeline Integrity Version
 
-Assembles long-form video by processing sections independently and 
-concatenating the results, avoiding keeping many clips open at once.
+Uses FFmpeg's concat demuxer for final assembly to ensure perfect 
+timeline synchronization and zero gaps, preventing the '1:00 freeze'.
 """
 
 import json
 import sys
 import os
 import gc
+import subprocess
 from typing import Optional, List
 
 try:
@@ -48,23 +49,18 @@ def apply_fade(clip, fade_in_duration=0.5, fade_out_duration=0.5):
 
 
 def write_video(clip, path, fps, **kwargs):
-    """Write a video file using version-compatible arguments."""
+    """Write an intermediate video file with fixed settings for concatenation."""
     write_args = {
         "fps": fps,
         "codec": "libx264",
-        "threads": 2, # Reduced to save memory
+        "threads": 2,
+        "audio": False, # Sections don't need audio, added at final stage
+        "preset": "medium",
     }
     
-    # Add optional args if they are provided
-    for key in ["audio", "audio_codec", "temp_audiofile", "remove_temp", "preset"]:
-        if key in kwargs:
-            write_args[key] = kwargs[key]
-            
     if MOVIEPY_V2:
-        # MoviePy 2.x doesn't use verbose/logger in the same way
         clip.write_videofile(path, **write_args)
     else:
-        # MoviePy 1.x supports verbose/logger
         clip.write_videofile(path, verbose=False, logger=None, **write_args)
 
 
@@ -76,7 +72,7 @@ def create_section_video(
     section_index: int,
     temp_dir: str
 ) -> str:
-    """Create a video file for a single section and return its path."""
+    """Create a high-quality video file for a single section."""
     
     print(f"  Processing section {section_index} ({duration:.1f}s)...", file=sys.stderr)
     
@@ -85,11 +81,10 @@ def create_section_video(
     
     if not video_clips:
         clip = ColorClip(size=(width, height), color=(0, 0, 0), duration=duration)
-        write_video(clip, section_path, fps=24)
+        write_video(clip, section_path, fps=30)
         clip.close()
         return section_path
     
-    # Distribute clips across the section duration
     num_clips = len(video_clips)
     clip_duration = duration / num_clips
     
@@ -102,19 +97,17 @@ def create_section_video(
             continue
             
         try:
-            print(f"    Opening clip {i}: {os.path.basename(path)}", file=sys.stderr)
-            # Disable audio to save memory and avoid issues
+            # Disable audio to save memory
             clip = VideoFileClip(path, audio=False)
             
-            # CRITICAL: Resize to target dimensions IMMEDIATELY to save RAM
-            # MoviePy keeps the full frame in memory otherwise
+            # Scale and crop to target dimensions
             if MOVIEPY_V2:
                 clip = clip.resized(height=height)
                 if clip.w < width:
                     clip = clip.resized(width=width)
                 clip = clip.cropped(x_center=clip.w/2, y_center=clip.h/2, width=width, height=height)
                 
-                # Limit duration
+                # Take exact subclip
                 duration_to_take = min(clip.duration, clip_duration)
                 clip = clip.subclipped(0, duration_to_take)
                 clip = clip.with_duration(clip_duration)
@@ -125,7 +118,6 @@ def create_section_video(
                     clip = clip.resize(width=width)
                 clip = clip.crop(x_center=clip.w/2, y_center=clip.h/2, width=width, height=height)
                 
-                # Limit duration
                 duration_to_take = min(clip.duration, clip_duration)
                 clip = clip.subclip(0, duration_to_take)
                 clip = clip.set_duration(clip_duration)
@@ -141,33 +133,28 @@ def create_section_video(
             
     if not active_clips:
         clip = ColorClip(size=(width, height), color=(0, 0, 0), duration=duration)
-        write_video(clip, section_path, fps=24)
+        write_video(clip, section_path, fps=30)
         clip.close()
         return section_path
         
-    # Create composite for this section
     composite = CompositeVideoClip(active_clips, size=(width, height))
     if MOVIEPY_V2:
         composite = composite.with_duration(duration)
     else:
         composite = composite.set_duration(duration)
         
-    # Write section to file
-    write_video(composite, section_path, fps=24, audio=False)
+    write_video(composite, section_path, fps=30)
     
-    # CRITICAL: Close all clips to free memory
     composite.close()
     for c in active_clips:
         c.close()
     
-    # Explicit GC
     gc.collect()
-    
     return section_path
 
 
 def assemble_video(config: dict) -> dict:
-    """Main video assembly function using chunked processing."""
+    """Main video assembly function using FFmpeg concat demuxer."""
     
     video_id = config.get("video_id", "unknown")
     audio_path = config.get("audio_path")
@@ -180,21 +167,16 @@ def assemble_video(config: dict) -> dict:
     height = video_config.get("height", 1080)
     fps = video_config.get("fps", 30)
     
-    # Get local temp dir from config or use a default near the output
     temp_dir = os.path.dirname(output_path)
     
-    # CHECK IF VIDEO ALREADY EXISTS (Optimized resume)
+    # Resume check
     if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
         print(f"Video already exists at {output_path}, skipping render.", file=sys.stderr)
         try:
             existing_video = VideoFileClip(output_path)
             dur = existing_video.duration
             existing_video.close()
-            return {
-                "success": True,
-                "output_path": output_path,
-                "duration_seconds": dur
-            }
+            return {"success": True, "output_path": output_path, "duration_seconds": dur}
         except:
             print("Existing video is corrupt, re-rendering...", file=sys.stderr)
             pass
@@ -203,7 +185,6 @@ def assemble_video(config: dict) -> dict:
         return {"success": False, "error": f"Audio file not found: {audio_path}"}
     
     try:
-        # Load audio to get total duration
         print("Loading audio...", file=sys.stderr)
         audio = AudioFileClip(audio_path)
         total_duration = audio.duration
@@ -213,48 +194,50 @@ def assemble_video(config: dict) -> dict:
         
         section_files = []
         
-        # Step 1: Process each section independently
+        # Step 1: Render individual sections
         for i, timing in enumerate(section_timings):
             start = timing.get("start_seconds", 0)
             end = timing.get("end_seconds", start + 60)
             duration = end - start
-            
             assets = section_assets_list[i] if i < len(section_assets_list) else {}
             
             section_file = create_section_video(assets, duration, width, height, i, temp_dir)
             section_files.append(section_file)
             
-        # Step 2: Concatenate section files
-        print("Concatenating sections...", file=sys.stderr)
-        section_clips = [VideoFileClip(f) for f in section_files]
+        # Step 2: Use FFmpeg to concatenate sections perfectly
+        # Create manifest file for FFmpeg
+        manifest_path = os.path.join(temp_dir, f"manifest_{video_id}.txt")
+        with open(manifest_path, "w") as f:
+            for sf in section_files:
+                # Use absolute paths and escape single quotes
+                f.write(f"file '{os.path.abspath(sf)}'\n")
         
-        final_video = concatenate_videoclips(section_clips, method="compose")
+        print("Stitching sections with FFmpeg concat demuxer...", file=sys.stderr)
+        temp_no_audio = os.path.join(temp_dir, f"no_audio_{video_id}.mp4")
         
-        if MOVIEPY_V2:
-            final_video = final_video.with_audio(audio)
-        else:
-            final_video = final_video.set_audio(audio)
+        # Concat command
+        subprocess.run([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", 
+            "-i", manifest_path, "-c", "copy", temp_no_audio
+        ], check=True, capture_output=True)
+
+        # Step 3: Add the final audio
+        print("Muxing final audio and video...", file=sys.stderr)
+        subprocess.run([
+            "ffmpeg", "-y", "-i", temp_no_audio, "-i", audio_path,
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            "-shortest", output_path
+        ], check=True, capture_output=True)
         
-        print(f"Writing final video to {output_path}...", file=sys.stderr)
-        write_video(
-            final_video,
-            output_path,
-            fps=fps,
-            audio=True,
-            audio_codec="aac",
-            temp_audiofile=os.path.join(temp_dir, f"temp-audio-{video_id}.m4a"),
-            remove_temp=True,
-            preset="medium"
-        )
-        
-        # Step 3: Cleanup
-        final_video.close()
+        # Step 4: Cleanup
         audio.close()
-        for c in section_clips:
-            c.close()
         for f in section_files:
             try: os.remove(f)
             except: pass
+        try: os.remove(manifest_path)
+        except: pass
+        try: os.remove(temp_no_audio)
+        except: pass
             
         return {
             "success": True,
@@ -262,6 +245,9 @@ def assemble_video(config: dict) -> dict:
             "duration_seconds": total_duration
         }
         
+    except subprocess.CalledProcessError as e:
+        print(f"FFmpeg failed: {e.stderr.decode()}", file=sys.stderr)
+        return {"success": False, "error": f"FFmpeg error: {e.stderr.decode()}"}
     except Exception as e:
         import traceback
         print(traceback.format_exc(), file=sys.stderr)
@@ -270,8 +256,6 @@ def assemble_video(config: dict) -> dict:
 
 def main():
     """Read JSON from stdin, process, write JSON to stdout."""
-    
-    # Redirect all further stdout to stderr so only our JSON result goes to real stdout
     true_stdout = sys.stdout
     sys.stdout = sys.stderr
 
@@ -287,8 +271,6 @@ def main():
         sys.exit(1)
     
     result = assemble_video(config)
-    
-    # Send result to the REAL stdout
     print(json.dumps(result), file=true_stdout)
     true_stdout.flush()
 
