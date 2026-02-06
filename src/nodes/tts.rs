@@ -320,17 +320,70 @@ impl TTSLogic {
     }
 
     /// Generate audio using Qwen3-TTS (OpenAI-compatible endpoint)
+    /// Handles chunking for long texts
     async fn generate_qwen3(&self, text: &str) -> Result<Vec<u8>, String> {
         let api_url = self.config.qwen3_api_url.as_ref()
             .ok_or("Qwen3-TTS API URL not configured")?;
         let voice = self.config.qwen3_voice.as_ref()
             .map(|s| s.as_str())
             .unwrap_or("default");
+        let api_key = self.config.qwen3_api_key.as_ref();
 
+        let word_count = text.split_whitespace().count();
+        let char_count = text.len();
+        let estimated_duration_min = word_count as f64 / 150.0;
+        
+        // Use a 4000 character limit for Qwen3 as well
+        const MAX_CHARS_PER_CHUNK: usize = 4000;
+        
+        if char_count <= MAX_CHARS_PER_CHUNK {
+            return self.generate_qwen3_chunk(text, api_url, api_key.map(|s| s.as_str()), voice).await;
+        }
+        
+        // Need to chunk the text
+        let chunks = Self::chunk_text_for_tts(text, MAX_CHARS_PER_CHUNK);
+        info!(
+            "TTS: Splitting {} chars into {} chunks for Qwen3 (est. {:.1} min total)...",
+            char_count, chunks.len(), estimated_duration_min
+        );
+        
+        let mut all_audio: Vec<u8> = Vec::new();
+        
+        for (i, chunk) in chunks.iter().enumerate() {
+            info!("TTS: Processing chunk {}/{} ({} chars)...", i + 1, chunks.len(), chunk.len());
+            
+            match self.generate_qwen3_chunk(chunk, api_url, api_key.map(|s| s.as_str()), voice).await {
+                Ok(audio_bytes) => {
+                    info!("TTS: Chunk {}/{} complete ({} bytes)", i + 1, chunks.len(), audio_bytes.len());
+                    all_audio.extend(audio_bytes);
+                }
+                Err(e) => {
+                    warn!("TTS: Chunk {}/{} failed: {}", i + 1, chunks.len(), e);
+                    return Err(format!("Failed on chunk {}: {}", i + 1, e));
+                }
+            }
+            
+            if i < chunks.len() - 1 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+        }
+        
+        info!("TTS: All chunks complete, total {} bytes", all_audio.len());
+        Ok(all_audio)
+    }
+
+    /// Generate audio for a single chunk using Qwen3
+    async fn generate_qwen3_chunk(
+        &self,
+        text: &str,
+        api_url: &str,
+        api_key: Option<&str>,
+        voice: &str,
+    ) -> Result<Vec<u8>, String> {
         let url = format!("{}/audio/speech", api_url.trim_end_matches('/'));
 
         let request_body = OpenAITTSRequest {
-            model: "qwen3-tts".to_string(), // Model name depends on your setup
+            model: "qwen3-tts".to_string(),
             input: text.to_string(),
             voice: voice.to_string(),
             speed: Some(self.config.speed),
@@ -342,9 +395,8 @@ impl TTSLogic {
             .header("Content-Type", "application/json")
             .json(&request_body);
 
-        // Add API key if configured
-        if let Some(api_key) = &self.config.qwen3_api_key {
-            request = request.header("Authorization", format!("Bearer {}", api_key));
+        if let Some(key) = api_key {
+            request = request.header("Authorization", format!("Bearer {}", key));
         }
 
         let response = request
@@ -365,6 +417,7 @@ impl TTSLogic {
     }
 
     /// Generate audio using OpenAI TTS
+    /// Handles chunking for long texts (OpenAI has a 4096 character limit)
     async fn generate_openai(&self, text: &str) -> Result<Vec<u8>, String> {
         let api_key = self.config.openai_api_key.as_ref()
             .ok_or("OpenAI API key not configured")?;
@@ -375,6 +428,62 @@ impl TTSLogic {
             .map(|s| s.as_str())
             .unwrap_or("tts-1-hd");
 
+        let word_count = text.split_whitespace().count();
+        let char_count = text.len();
+        let estimated_duration_min = word_count as f64 / 150.0;
+        
+        // OpenAI has a 4096 character limit per request
+        const MAX_CHARS_PER_CHUNK: usize = 4000;
+        
+        if char_count <= MAX_CHARS_PER_CHUNK {
+            info!(
+                "TTS: Sending {} chars to OpenAI (est. {:.1} min audio)...",
+                char_count, estimated_duration_min
+            );
+            return self.generate_openai_chunk(text, api_key, voice, model).await;
+        }
+        
+        // Need to chunk the text
+        let chunks = Self::chunk_text_for_tts(text, MAX_CHARS_PER_CHUNK);
+        info!(
+            "TTS: Splitting {} chars into {} chunks for OpenAI (est. {:.1} min total)...",
+            char_count, chunks.len(), estimated_duration_min
+        );
+        
+        let mut all_audio: Vec<u8> = Vec::new();
+        
+        for (i, chunk) in chunks.iter().enumerate() {
+            info!("TTS: Processing chunk {}/{} ({} chars)...", i + 1, chunks.len(), chunk.len());
+            
+            match self.generate_openai_chunk(chunk, api_key, voice, model).await {
+                Ok(audio_bytes) => {
+                    info!("TTS: Chunk {}/{} complete ({} bytes)", i + 1, chunks.len(), audio_bytes.len());
+                    all_audio.extend(audio_bytes);
+                }
+                Err(e) => {
+                    warn!("TTS: Chunk {}/{} failed: {}", i + 1, chunks.len(), e);
+                    return Err(format!("Failed on chunk {}: {}", i + 1, e));
+                }
+            }
+            
+            // Small delay between chunks to avoid rate limiting
+            if i < chunks.len() - 1 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            }
+        }
+        
+        info!("TTS: All chunks complete, total {} bytes", all_audio.len());
+        Ok(all_audio)
+    }
+
+    /// Generate audio for a single chunk using OpenAI
+    async fn generate_openai_chunk(
+        &self,
+        text: &str,
+        api_key: &str,
+        voice: &str,
+        model: &str,
+    ) -> Result<Vec<u8>, String> {
         let request_body = OpenAITTSRequest {
             model: model.to_string(),
             input: text.to_string(),
