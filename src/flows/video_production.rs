@@ -55,6 +55,12 @@ impl VideoProductionFlow {
             elevenlabs_api_key: settings.tts.elevenlabs_api_key.clone(),
             elevenlabs_voice_id: settings.tts.elevenlabs_voice_id.clone(),
             elevenlabs_model_id: settings.tts.elevenlabs_model_id.clone(),
+            openai_api_key: settings.tts.openai_api_key.clone(),
+            openai_voice: settings.tts.openai_voice.clone(),
+            openai_model: settings.tts.openai_model.clone(),
+            qwen3_api_url: settings.tts.qwen3_api_url.clone(),
+            qwen3_api_key: settings.tts.qwen3_api_key.clone(),
+            qwen3_voice: settings.tts.qwen3_voice.clone(),
             local_model_path: settings.tts.local_model_path.clone(),
             local_speaker_id: settings.tts.local_speaker_id.clone(),
             stability: settings.tts.stability,
@@ -84,10 +90,7 @@ impl VideoProductionFlow {
         };
 
         // Create nodes with database pool for persistence
-        let scheduler_node = AsyncNode::new(SchedulerLogic::new(
-            scheduler_config,
-            db_pool.clone(),
-        ));
+        let scheduler_node = AsyncNode::new(SchedulerLogic::new(scheduler_config, db_pool.clone()));
         let strategy_node = AsyncNode::new(StrategyLogic::new(
             strategy_config,
             llm_client.clone(),
