@@ -562,7 +562,7 @@ impl AsyncNodeLogic for TTSLogic {
 
         let full_text = &script.full_text;
         let mut section_timings: Vec<SectionTiming> = Vec::new();
-        let mut _current_time: f64 = 0.0;
+        let mut current_time: f64 = 0.0;
 
         // Generate audio for the full script
         let audio_bytes = match self.generate_audio(full_text).await {
