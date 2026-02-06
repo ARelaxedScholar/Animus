@@ -51,10 +51,15 @@ impl VideoProductionFlow {
         };
 
         let tts_config = TTSConfig {
+            provider: settings.tts.provider.clone(),
             elevenlabs_api_key: settings.tts.elevenlabs_api_key.clone(),
             elevenlabs_voice_id: settings.tts.elevenlabs_voice_id.clone(),
+            elevenlabs_model_id: settings.tts.elevenlabs_model_id.clone(),
+            local_model_path: settings.tts.local_model_path.clone(),
+            local_speaker_id: settings.tts.local_speaker_id.clone(),
             stability: settings.tts.stability,
             similarity_boost: settings.tts.similarity_boost,
+            speed: settings.tts.speed as f32,
             ..Default::default()
         };
 

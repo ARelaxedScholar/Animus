@@ -455,13 +455,20 @@ impl TTSLogic {
         let output_path = format!("/tmp/piper_output_{}.wav", uuid::Uuid::new_v4());
 
         // Piper reads from stdin and writes to file
-        let mut child = Command::new("piper")
-            .arg("--model").arg(model_path)
-            .arg("--output_file").arg(&output_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
+        let mut cmd = Command::new("piper");
+        cmd.arg("--model").arg(model_path)
+           .arg("--output_file").arg(&output_path)
+           .stdin(Stdio::piped())
+           .stdout(Stdio::null())
+           .stderr(Stdio::null());
+        
+        // Add speed control (length_scale is inverse of speed)
+        if self.config.speed != 1.0 && self.config.speed > 0.0 {
+            let length_scale = 1.0 / self.config.speed;
+            cmd.arg("--length-scale").arg(length_scale.to_string());
+        }
+
+        let mut child = cmd.spawn()
             .map_err(|e| format!("Failed to spawn Piper: {}", e))?;
 
         // Write text to stdin
@@ -477,12 +484,29 @@ impl TTSLogic {
             return Err("Piper TTS failed".to_string());
         }
 
-        // Read the output file
-        let audio_bytes = tokio::fs::read(&output_path).await
-            .map_err(|e| format!("Failed to read Piper output: {}", e))?;
+        // Convert WAV to MP3 to maintain consistency with other providers
+        let mp3_path = format!("{}.mp3", output_path);
+        let convert_status = Command::new("ffmpeg")
+            .arg("-i").arg(&output_path)
+            .arg("-codec:a").arg("libmp3lame")
+            .arg("-qscale:a").arg("2")
+            .arg(&mp3_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status().await
+            .map_err(|e| format!("Failed to run FFmpeg for conversion: {}", e))?;
+
+        if !convert_status.success() {
+            return Err("FFmpeg conversion failed".to_string());
+        }
+
+        // Read the MP3 file
+        let audio_bytes = tokio::fs::read(&mp3_path).await
+            .map_err(|e| format!("Failed to read MP3 output: {}", e))?;
 
         // Clean up
         let _ = tokio::fs::remove_file(&output_path).await;
+        let _ = tokio::fs::remove_file(&mp3_path).await;
 
         Ok(audio_bytes)
     }
@@ -538,7 +562,7 @@ impl AsyncNodeLogic for TTSLogic {
 
         let full_text = &script.full_text;
         let mut section_timings: Vec<SectionTiming> = Vec::new();
-        let mut current_time: f64 = 0.0;
+        let mut _current_time: f64 = 0.0;
 
         // Generate audio for the full script
         let audio_bytes = match self.generate_audio(full_text).await {

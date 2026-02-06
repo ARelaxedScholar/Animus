@@ -53,21 +53,21 @@ struct PexelsVideoResponse {
 struct PexelsVideo {
     id: u64,
     #[serde(default)]
-    duration: u32,
+    duration: Option<u32>,
     #[serde(default)]
-    video_files: Vec<PexelsVideoFile>,
+    video_files: Option<Vec<PexelsVideoFile>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PexelsVideoFile {
     #[serde(default)]
-    link: String,
+    link: Option<String>,
     #[serde(default)]
-    quality: String,
+    quality: Option<String>,
     #[serde(default)]
-    width: u32,
+    width: Option<u32>,
     #[serde(default)]
-    height: u32,
+    height: Option<u32>,
 }
 
 /// The asset collector node logic
@@ -229,21 +229,24 @@ impl AssetCollectorLogic {
         section_index: usize,
         clip_index: usize,
     ) -> Result<AssetFile, String> {
+        let video_files = video.video_files.as_ref().ok_or("No video files in response")?;
+        
         // Find the best quality video file (prefer HD/4K)
-        let video_file = video.video_files.iter()
-            .filter(|f| f.width >= 1280)
-            .max_by_key(|f| f.width)
-            .or_else(|| video.video_files.first())
+        let video_file = video_files.iter()
+            .filter(|f| f.width.unwrap_or(0) >= 1280)
+            .max_by_key(|f| f.width.unwrap_or(0))
+            .or_else(|| video_files.first())
             .ok_or("No video files available")?;
 
         info!(
             "AssetCollector: Downloading video {} ({}x{})...",
-            video.id, video_file.width, video_file.height
+            video.id, video_file.width.unwrap_or(0), video_file.height.unwrap_or(0)
         );
 
         // Download the video
+        let link = video_file.link.as_ref().ok_or("Video file has no link")?;
         let response = self.http_client
-            .get(&video_file.link)
+            .get(link)
             .send()
             .await
             .map_err(|e| format!("Failed to start download: {}", e))?;
@@ -277,7 +280,7 @@ impl AssetCollectorLogic {
         Ok(AssetFile {
             path: key,
             source: "pexels".to_string(),
-            duration_seconds: Some(video.duration as f64),
+            duration_seconds: Some(video.duration.unwrap_or(0) as f64),
             description: format!("Pexels video {}", video.id),
         })
     }

@@ -18,6 +18,8 @@ pub struct Settings {
     pub control_api_port: u16,
 }
 
+use crate::nodes::tts::TTSProvider;
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DatabaseConfig {
     pub url: String,
@@ -44,7 +46,7 @@ pub struct LlmConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct TtsConfig {
     /// TTS provider: elevenlabs, qwen3, openai, coqui, piper
-    pub provider: String,
+    pub provider: TTSProvider,
     
     // ElevenLabs settings
     pub elevenlabs_api_key: Option<String>,

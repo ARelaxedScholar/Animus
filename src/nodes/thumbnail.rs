@@ -53,8 +53,8 @@ impl ThumbnailLogic {
     /// In production, this would use Puppeteer/Playwright to render HTML templates
     async fn generate_simple_thumbnail(
         &self,
-        title: &str,
-        video_id: &str,
+        _title: &str,
+        _video_id: &str,
     ) -> Result<Vec<u8>, String> {
         use image::{Rgb, RgbImage};
         use std::io::Cursor;

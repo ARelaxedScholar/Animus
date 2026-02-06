@@ -31,7 +31,7 @@
         };
 
         # Python environment for MoviePy bridge
-        pythonEnv = pkgs.python312.withPackages (
+        pythonEnv = pkgs.python313.withPackages (
           ps: with ps; [
             moviepy
             pillow
@@ -53,10 +53,11 @@
             pkg-config
             openssl
 
-            # Python for video processing
+            # Python and tools
             pythonEnv
             ffmpeg
             imagemagick
+            piper-tts
 
             # Database
             postgresql_16

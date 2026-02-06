@@ -250,11 +250,13 @@ Your task is to generate compelling video topic ideas that:
 5. Have strong "watch time" potential through storytelling and revelation
 
 The target audience seeks meaning, purpose, and practical wisdom for navigating life's challenges.
-Videos should be 12-20 minutes, allowing for depth without losing engagement.
+Videos should be {}-{} minutes, allowing for depth without losing engagement.
 
 Respond in JSON format."#,
             self.config.channel_name,
-            self.config.persona
+            self.config.persona,
+            self.config.target_duration_min,
+            self.config.target_duration_max
         )
     }
 

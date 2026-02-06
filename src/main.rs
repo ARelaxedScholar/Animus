@@ -71,6 +71,13 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Migration failed: {}", e))?;
     info!("Database migrations applied");
 
+    // CLEANUP: Reset any 'producing' videos from previous crashed runs
+    if let Err(e) = sqlx::query!(
+        "UPDATE videos SET status = 'failed', error_message = 'Daemon restarted during production', failed_at_stage = 'unknown' WHERE status = 'producing'"
+    ).execute(&*db_pool).await {
+        warn!("Failed to cleanup stale 'producing' videos: {}", e);
+    }
+
     // Log queued seeds from previous session
     match db::get_queue_length(&db_pool).await {
         Ok(count) if count > 0 => {

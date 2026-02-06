@@ -186,28 +186,32 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
             Err(e) => return serde_json::json!({ "error": format!("Failed to serialize bridge input: {}", e) }),
         };
 
+        info!("VideoAssembler: Spawning Python bridge with {} bytes of input", input_json.len());
+
         let mut child = match Command::new("python3")
             .arg(&self.config.bridge_script_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::inherit())
             .spawn() {
             Ok(c) => c,
             Err(e) => return serde_json::json!({ "error": format!("Failed to spawn Python: {}", e) }),
         };
 
-        // Write input to stdin
+        // Write input to stdin BEFORE waiting
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
             if let Err(e) = stdin.write_all(input_json.as_bytes()).await {
-                return serde_json::json!({ "error": format!("Failed to write to Python: {}", e) });
+                return serde_json::json!({ "error": format!("Failed to write to Python stdin: {}", e) });
             }
+            // Explicitly drop stdin to signal EOF to Python
+            std::mem::drop(stdin);
         }
 
-        // Wait for completion
+        // Wait for process with basic wait_with_output
         let output = match child.wait_with_output().await {
             Ok(o) => o,
-            Err(e) => return serde_json::json!({ "error": format!("Python process failed: {}", e) }),
+            Err(e) => return serde_json::json!({ "error": format!("Failed to wait for Python: {}", e) }),
         };
 
         if !output.status.success() {
