@@ -360,3 +360,220 @@ pub async fn get_best_evaluation(
     .await?;
     Ok(row)
 }
+
+// =============================================================================
+// Video Performance Functions (DSPy Training Loop)
+// =============================================================================
+
+/// Insert a performance snapshot for a video
+pub async fn insert_video_performance(
+    pool: &PgPool,
+    video_id: Uuid,
+    view_count: i64,
+    like_count: i64,
+    comment_count: i64,
+    average_view_duration_seconds: Option<f32>,
+    average_view_percentage: Option<f32>,
+    retention_curve: Option<serde_json::Value>,
+    hours_since_publish: Option<i32>,
+) -> Result<i32, sqlx::Error> {
+    // Compute ratios
+    let like_ratio = if view_count > 0 {
+        Some(like_count as f32 / view_count as f32)
+    } else {
+        None
+    };
+    let comment_ratio = if view_count > 0 {
+        Some(comment_count as f32 / view_count as f32)
+    } else {
+        None
+    };
+
+    let row: (i32,) = sqlx::query_as(
+        r#"INSERT INTO video_performance 
+           (video_id, view_count, like_count, comment_count,
+            average_view_duration_seconds, average_view_percentage,
+            retention_curve, like_ratio, comment_ratio, hours_since_publish)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           RETURNING id"#,
+    )
+    .bind(video_id)
+    .bind(view_count)
+    .bind(like_count)
+    .bind(comment_count)
+    .bind(average_view_duration_seconds)
+    .bind(average_view_percentage)
+    .bind(retention_curve)
+    .bind(like_ratio)
+    .bind(comment_ratio)
+    .bind(hours_since_publish)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
+/// Get the latest performance snapshot for a video
+pub async fn get_latest_video_performance(
+    pool: &PgPool,
+    video_id: Uuid,
+) -> Result<Option<(i64, i64, Option<f32>, Option<f32>)>, sqlx::Error> {
+    // Returns (view_count, like_count, avg_view_percentage, like_ratio)
+    let row: Option<(i64, i64, Option<f32>, Option<f32>)> = sqlx::query_as(
+        r#"SELECT view_count, like_count, average_view_percentage, like_ratio
+           FROM video_performance
+           WHERE video_id = $1
+           ORDER BY fetched_at DESC
+           LIMIT 1"#,
+    )
+    .bind(video_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+/// Update the performance score on a video (the harmonic mean)
+pub async fn update_video_performance_score(
+    pool: &PgPool,
+    video_id: Uuid,
+    score: f32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"UPDATE videos 
+           SET performance_score = $1, performance_updated_at = NOW() 
+           WHERE id = $2"#,
+    )
+    .bind(score)
+    .bind(video_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Get published videos that need performance updates
+/// Returns videos published > N hours ago without a performance score
+pub async fn get_videos_needing_performance_update(
+    pool: &PgPool,
+    min_hours_since_publish: i32,
+    limit: i64,
+) -> Result<Vec<(Uuid, String, DateTime<Utc>)>, sqlx::Error> {
+    // Returns (video_id, youtube_id, published_at)
+    let rows: Vec<(Uuid, String, DateTime<Utc>)> = sqlx::query_as(
+        r#"SELECT id, youtube_id, published_at
+           FROM videos
+           WHERE status = 'published'
+             AND youtube_id IS NOT NULL
+             AND published_at IS NOT NULL
+             AND published_at < NOW() - INTERVAL '1 hour' * $1
+             AND performance_score IS NULL
+           ORDER BY published_at ASC
+           LIMIT $2"#,
+    )
+    .bind(min_hours_since_publish)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Get the latest channel baseline
+pub async fn get_channel_baseline(
+    pool: &PgPool,
+) -> Result<Option<(f32, f32, f32)>, sqlx::Error> {
+    // Returns (avg_views_30d, avg_likes_30d, avg_retention_30d)
+    let row: Option<(Option<f32>, Option<f32>, Option<f32>)> = sqlx::query_as(
+        r#"SELECT avg_views_30d, avg_likes_30d, avg_retention_30d
+           FROM channel_baselines
+           ORDER BY computed_at DESC
+           LIMIT 1"#,
+    )
+    .fetch_optional(pool)
+    .await?;
+    
+    // Unwrap options, defaulting to 1.0 to avoid division by zero
+    Ok(row.map(|(v, l, r)| (v.unwrap_or(1.0), l.unwrap_or(1.0), r.unwrap_or(1.0))))
+}
+
+/// Insert or update channel baseline
+pub async fn upsert_channel_baseline(
+    pool: &PgPool,
+    avg_views_7d: f32,
+    avg_likes_7d: f32,
+    avg_retention_7d: f32,
+    avg_views_30d: f32,
+    avg_likes_30d: f32,
+    avg_retention_30d: f32,
+    video_count_7d: i32,
+    video_count_30d: i32,
+) -> Result<i32, sqlx::Error> {
+    let row: (i32,) = sqlx::query_as(
+        r#"INSERT INTO channel_baselines 
+           (avg_views_7d, avg_likes_7d, avg_retention_7d,
+            avg_views_30d, avg_likes_30d, avg_retention_30d,
+            video_count_7d, video_count_30d)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING id"#,
+    )
+    .bind(avg_views_7d)
+    .bind(avg_likes_7d)
+    .bind(avg_retention_7d)
+    .bind(avg_views_30d)
+    .bind(avg_likes_30d)
+    .bind(avg_retention_30d)
+    .bind(video_count_7d)
+    .bind(video_count_30d)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0)
+}
+
+/// Get all published videos with their scripts and performance scores
+/// Used for DSPy training data export
+pub async fn get_training_data(
+    pool: &PgPool,
+    min_score: Option<f32>,
+    limit: i64,
+) -> Result<Vec<(Uuid, serde_json::Value, serde_json::Value, f32)>, sqlx::Error> {
+    // Returns (video_id, topic_brief, script, performance_score)
+    let query = match min_score {
+        Some(score) => {
+            sqlx::query_as(
+                r#"SELECT id, topic_brief, script, performance_score
+                   FROM videos
+                   WHERE status = 'published'
+                     AND script IS NOT NULL
+                     AND performance_score IS NOT NULL
+                     AND performance_score >= $1
+                   ORDER BY performance_score DESC
+                   LIMIT $2"#,
+            )
+            .bind(score)
+            .bind(limit)
+        }
+        None => {
+            sqlx::query_as(
+                r#"SELECT id, topic_brief, script, performance_score
+                   FROM videos
+                   WHERE status = 'published'
+                     AND script IS NOT NULL
+                     AND performance_score IS NOT NULL
+                   ORDER BY performance_score DESC
+                   LIMIT $1"#,
+            )
+            .bind(limit)
+        }
+    };
+    
+    let rows: Vec<(Uuid, Option<serde_json::Value>, Option<serde_json::Value>, Option<f32>)> = 
+        query.fetch_all(pool).await?;
+    
+    // Filter out nulls and unwrap
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, tb, s, ps)| {
+            match (tb, s, ps) {
+                (Some(topic), Some(script), Some(score)) => Some((id, topic, script, score)),
+                _ => None,
+            }
+        })
+        .collect())
+}

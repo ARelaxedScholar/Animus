@@ -195,7 +195,7 @@ async fn shutdown_daemon(
 pub struct ListVideosQuery {
     pub status: Option<String>,
     pub limit: Option<i64>,
-    pub offset: Option<i64>,
+    pub _offset: Option<i64>,
 }
 
 /// Video summary for list view

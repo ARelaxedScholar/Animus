@@ -39,6 +39,9 @@
             requests
             google-auth-oauthlib
             google-auth-httplib2
+            google-api-python-client
+            psycopg2
+            python-dotenv
           ]
         );
 
@@ -50,6 +53,7 @@
             rustToolchain
             cargo-edit
             cargo-watch
+            sqlx-cli
 
             # Build dependencies
             pkg-config
@@ -78,10 +82,28 @@
             echo "   Rust: $(rustc --version)"
             echo "   Python: $(python --version)"
             echo ""
+
+            # Setup local python venv for packages not in nixpkgs (like dspy-ai)
+            if [ ! -d ".venv" ]; then
+              echo "Creating Python virtual environment..."
+              python -m venv .venv
+            fi
+            source .venv/bin/activate
+
+            # Install dspy-ai if missing
+            if ! python -c "import dspy" &> /dev/null; then
+              echo "Installing dspy-ai into virtual environment..."
+              pip install dspy-ai
+            fi
+
             echo "Commands:"
             echo "   cargo build    - Build the project"
             echo "   cargo run      - Run the daemon"
             echo "   just dev       - Start dev services (DB + MinIO)"
+            echo ""
+            echo "DSPy Judge Commands:"
+            echo "   python farm_ctl.py analytics      - Fetch YouTube performance"
+            echo "   python farm_ctl.py compile-judge  - Optimize the DSPy Judge"
           '';
 
           RUST_BACKTRACE = 1;

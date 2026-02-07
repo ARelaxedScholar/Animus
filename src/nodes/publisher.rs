@@ -45,6 +45,7 @@ impl Default for PublisherConfig {
 
 /// YouTube OAuth token response
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct TokenResponse {
     access_token: String,
     expires_in: u64,
@@ -52,12 +53,14 @@ struct TokenResponse {
 
 /// YouTube video insert response
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct YouTubeVideoResponse {
     id: String,
     snippet: Option<YouTubeSnippet>,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct YouTubeSnippet {
     title: String,
     #[serde(rename = "publishedAt")]

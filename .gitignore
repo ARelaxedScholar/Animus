@@ -26,3 +26,11 @@ __pycache__/
 # Temporary files
 *.tmp
 *.bak
+# Animus specific state
+tokens.json
+training_data.jsonl
+models/dspy/
+outputs/
+*.mp4
+*.wav
+*.jsonl

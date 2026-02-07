@@ -63,6 +63,7 @@ struct BridgeConfig {
 
 /// Output from the MoviePy bridge
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct BridgeOutput {
     success: bool,
     output_path: Option<String>,

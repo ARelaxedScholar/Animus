@@ -174,6 +174,12 @@ async fn main() -> anyhow::Result<()> {
     info!("   POST /shutdown - Graceful shutdown");
     info!("");
 
+    // Start background analytics worker
+    let analytics_pool = db_pool.clone();
+    tokio::spawn(async move {
+        animus::analytics::start_analytics_worker(analytics_pool, 12).await;
+    });
+
     // Main production loop
     loop {
         // Check for shutdown signal

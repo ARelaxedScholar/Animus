@@ -15,6 +15,7 @@
 //!                               Thumbnail → SEO → Publisher
 //! ```
 
+pub mod analytics;
 pub mod api;
 pub mod bridge;
 pub mod config;
