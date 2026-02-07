@@ -50,3 +50,14 @@ sqlx-prepare:
 clean:
     cargo clean
     rm -rf data/
+
+# Run the TUI dashboard
+tui:
+    cargo run --bin animus-tui
+
+# Run the daemon in the background and open TUI
+dashboard:
+    @echo "Starting daemon in background..."
+    cargo run --bin animus &
+    sleep 2
+    cargo run --bin animus-tui

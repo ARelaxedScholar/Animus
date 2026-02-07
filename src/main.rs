@@ -130,11 +130,11 @@ async fn main() -> anyhow::Result<()> {
     let shared_state_arc = Arc::new(RwLock::new(shared_state_map));
 
     // Create the production flow
-    let mut flow = VideoProductionFlow::new(&settings, llm_client, s3_client, db_pool.clone());
+    let mut flow = VideoProductionFlow::new(&settings, llm_client, s3_client.clone(), db_pool.clone());
     info!("Production flow initialized");
 
     // Set up shutdown signaling
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // Create API state
     let app_state = AppState {
@@ -151,6 +151,8 @@ async fn main() -> anyhow::Result<()> {
             last_error: None,
         })),
         shared_state: shared_state_arc.clone(),
+        db_pool: db_pool.clone(),
+        s3_client: s3_client.clone(),
     };
 
     // Start the control API server

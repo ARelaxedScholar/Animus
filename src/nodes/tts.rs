@@ -672,7 +672,10 @@ impl AsyncNodeLogic for TTSLogic {
             return serde_json::json!({
                 "success": true,
                 "audio_path": existing.audio_path,
+                "total_duration_seconds": existing.total_duration_seconds,
+                "section_timings": existing.section_timings,
                 "audio_timing": serde_json::to_value(&existing).unwrap(),
+                "video_id": script.video_id.to_string(),
                 "is_resume": true
             });
         }

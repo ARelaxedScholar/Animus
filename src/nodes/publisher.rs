@@ -83,6 +83,72 @@ impl PublisherLogic {
         }
     }
 
+    /// Retry publishing a video that failed at the publisher stage.
+    /// Downloads from S3 and re-uploads to YouTube.
+    pub async fn retry_publish(&self, video_id: uuid::Uuid) -> Result<String, String> {
+        info!("Publisher: Retrying upload for video {}", video_id);
+        
+        // Get video from database
+        let video = db::get_video(&self.db_pool, video_id)
+            .await
+            .map_err(|e| format!("Database error: {}", e))?
+            .ok_or_else(|| "Video not found".to_string())?;
+        
+        // Check if it has a video path
+        let video_path = video.video_path
+            .ok_or_else(|| "Video has no S3 path - not yet assembled".to_string())?;
+        
+        // Get SEO metadata
+        let seo_metadata: SEOMetadata = video.seo_metadata
+            .ok_or_else(|| "No SEO metadata".to_string())
+            .and_then(|v| serde_json::from_value(v).map_err(|e| format!("Invalid SEO metadata: {}", e)))?;
+        
+        // Get access token
+        let access_token = self.get_access_token().await
+            .map_err(|e| format!("Failed to get access token: {}", e))?;
+        
+        // Download video from S3
+        info!("Publisher: Downloading video from S3...");
+        let video_data = self.s3_client.download_bytes(&video_path).await
+            .map_err(|e| format!("Failed to download video: {}", e))?;
+        info!("Publisher: Downloaded {} bytes", video_data.len());
+        
+        // Upload to YouTube
+        info!("Publisher: Uploading to YouTube - '{}'", seo_metadata.title);
+        let youtube_video_id = self.upload_video(
+            &access_token,
+            video_data,
+            &seo_metadata,
+            video.scheduled_at,
+        ).await
+            .map_err(|e| format!("YouTube upload failed: {}", e))?;
+        
+        let youtube_url = format!("https://www.youtube.com/watch?v={}", youtube_video_id);
+        
+        // Upload thumbnail if available
+        if let Some(thumb_path) = video.thumbnail_path {
+            if let Ok(thumb_data) = self.s3_client.download_bytes(&thumb_path).await {
+                match self.set_thumbnail(&access_token, &youtube_video_id, thumb_data).await {
+                    Ok(_) => info!("Publisher: Custom thumbnail uploaded successfully"),
+                    Err(e) if e.contains("PERMISSION_DENIED") => {
+                        warn!("Publisher: {}", e);
+                    }
+                    Err(e) => {
+                        warn!("Failed to set thumbnail: {}", e);
+                    }
+                }
+            }
+        }
+        
+        // Mark as published in database
+        db::mark_video_published(&self.db_pool, video_id, &youtube_video_id, &youtube_url)
+            .await
+            .map_err(|e| format!("Failed to update database: {}", e))?;
+        
+        info!("Publisher: Retry successful! URL: {}", youtube_url);
+        Ok(youtube_url)
+    }
+
     /// Refresh the OAuth access token
     async fn get_access_token(&self) -> Result<String, String> {
         let response = self.http_client

@@ -207,8 +207,10 @@ impl AsyncNodeLogic for SchedulerLogic {
                     if let Ok(content) = tokio::fs::read_to_string(&path).await {
                         if let Ok(manual_script) = serde_json::from_str::<serde_json::Value>(&content) {
                             info!("Scheduler: Found manual script at {:?}", path);
-                            // Move file to a 'processed' folder or just delete it to avoid re-processing
-                            let _ = tokio::fs::remove_file(&path).await;
+                            
+                            // Move file to 'processed' folder instead of deleting
+                            let dest_path = format!("manual_scripts/processed/{}", path.file_name().unwrap().to_str().unwrap());
+                            let _ = tokio::fs::rename(&path, &dest_path).await;
 
                             return serde_json::json!({
                                 "should_produce": true,
