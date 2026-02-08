@@ -713,20 +713,22 @@ IMPORTANT:
         // Phase 3: Refinement loop with stagnation detection
         let mut iteration = 0u32;
         let mut stagnant_iterations = 0u32;
-        const STAGNATION_THRESHOLD: u32 = 3; // Break if no improvement for 3 iterations
+        let stagnation_threshold = config.stagnation_threshold;
         const BASE_TEMPERATURE: f32 = 0.6;
         const MAX_TEMPERATURE: f32 = 1.0;
 
         while best.evaluation.overall_score < config.quality_threshold
             && iteration < config.max_iterations
             && Instant::now() < deadline
-            && stagnant_iterations < STAGNATION_THRESHOLD
+            && stagnant_iterations < stagnation_threshold
         {
             iteration += 1;
 
             // Escalate temperature based on stagnation (0.6 -> 0.7 -> 0.8 -> 0.9 -> 1.0)
             let temperature = (BASE_TEMPERATURE + (stagnant_iterations as f32 * 0.1)).min(MAX_TEMPERATURE);
-            let force_dramatic = stagnant_iterations >= 2;
+            
+            // Force dramatic changes if we're halfway through the stagnation threshold
+            let force_dramatic = stagnant_iterations >= (stagnation_threshold / 2).max(1);
 
             info!(
                 "ScriptWriter: Refinement {}/{} (score: {:.1}, temp: {:.1}, stagnant: {})",
@@ -795,7 +797,7 @@ IMPORTANT:
         }
 
         // Log reason for stopping
-        if stagnant_iterations >= STAGNATION_THRESHOLD {
+        if stagnant_iterations >= stagnation_threshold {
             warn!(
                 "ScriptWriter: Stopping refinement due to stagnation ({} iterations without improvement)",
                 stagnant_iterations

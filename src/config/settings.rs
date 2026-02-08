@@ -122,6 +122,8 @@ pub struct ScriptImprovementConfig {
     pub quality_threshold: f32,
     /// Maximum refinement iterations before accepting best available
     pub max_iterations: u32,
+    /// Number of iterations without improvement before giving up early
+    pub stagnation_threshold: u32,
     /// Total timeout for the entire self-improvement process (seconds)
     pub timeout_seconds: u32,
 }
@@ -281,7 +283,7 @@ impl Settings {
                     .ok()
                     .and_then(|v| v.parse::<i64>().ok()),
             )?
-            .set_default("script_improvement.quality_threshold", 8.0)?
+            .set_default("script_improvement.quality_threshold", 9.0)?
             .set_override_option(
                 "script_improvement.quality_threshold",
                 std::env::var("SCRIPT_IMPROVEMENT_THRESHOLD")
@@ -292,6 +294,13 @@ impl Settings {
             .set_override_option(
                 "script_improvement.max_iterations",
                 std::env::var("SCRIPT_IMPROVEMENT_MAX_ITERATIONS")
+                    .ok()
+                    .and_then(|v| v.parse::<i64>().ok()),
+            )?
+            .set_default("script_improvement.stagnation_threshold", 3)?
+            .set_override_option(
+                "script_improvement.stagnation_threshold",
+                std::env::var("SCRIPT_IMPROVEMENT_STAGNATION_THRESHOLD")
                     .ok()
                     .and_then(|v| v.parse::<i64>().ok()),
             )?
