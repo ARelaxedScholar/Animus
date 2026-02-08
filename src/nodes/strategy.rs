@@ -369,13 +369,13 @@ impl AsyncNodeLogic for StrategyLogic {
         let user_prompt = self.build_user_prompt(source_focus, seed_topic);
 
         // Call DeepSeek for topic generation
-        let response = match self.llm_client.deepseek_complete(
-            "deepseek-chat",
-            &system_prompt,
-            &user_prompt,
-            Some(0.8), // Higher temperature for creativity
-            Some(1000),
-        ).await {
+        let response = match self.llm_client.deepseek_complete()
+            .model("deepseek-chat")
+            .system(&system_prompt)
+            .user(&user_prompt)
+            .temperature(0.8) // Higher temperature for creativity
+            .max_tokens(1000)
+            .await {
             Ok(text) => text,
             Err(e) => {
                 error!("Strategy LLM call failed: {}", e);

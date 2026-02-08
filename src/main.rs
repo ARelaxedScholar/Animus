@@ -49,11 +49,15 @@ async fn main() -> anyhow::Result<()> {
     info!("S3 client initialized (bucket: {})", settings.s3.bucket);
 
     // Initialize LLM client
-    let llm_client = Arc::new(
-        LlmClient::new()
-            .with_deepseek(&settings.llm.deepseek_api_key, Some(settings.llm.deepseek_base_url.clone()))
-            .with_gemini(&settings.llm.gemini_api_key, None),
-    );
+    let llm_client_base = LlmClient::new();
+    
+    let llm_client_with_ds = if settings.llm.deepseek_base_url.is_empty() {
+        llm_client_base.with_deepseek(&settings.llm.deepseek_api_key)
+    } else {
+        llm_client_base.with_deepseek_at(&settings.llm.deepseek_api_key, &settings.llm.deepseek_base_url)
+    };
+    
+    let llm_client = Arc::new(llm_client_with_ds.with_gemini(&settings.llm.gemini_api_key));
     info!("LLM client initialized (DeepSeek + Gemini)");
 
     // Initialize database pool

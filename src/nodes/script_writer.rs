@@ -559,13 +559,13 @@ IMPORTANT:
         let system_prompt = self.build_system_prompt();
         let user_prompt = self.build_user_prompt(topic_brief);
 
-        let response = self.llm_client.gemini_complete(
-            "gemini-3-flash-preview",
-            &system_prompt,
-            &user_prompt,
-            Some(0.8), // Higher temperature for diversity
-            Some(8000),
-        ).await.map_err(|e| format!("Gemini call failed: {}", e))?;
+        let response = self.llm_client.gemini_complete()
+            .model("gemini-3-flash-preview")
+            .system(&system_prompt)
+            .user(&user_prompt)
+            .temperature(0.8) // Higher temperature for diversity
+            .max_tokens(8000)
+            .await.map_err(|e| format!("Gemini call failed: {}", e))?;
 
         self.parse_script(&response, topic_brief.video_id)
     }
@@ -650,13 +650,13 @@ IMPORTANT:
         let system_prompt = self.build_judge_system_prompt();
         let user_prompt = self.build_judge_user_prompt(script, topic_brief);
 
-        let response = self.llm_client.deepseek_complete(
-            "deepseek-chat",
-            &system_prompt,
-            &user_prompt,
-            Some(0.3), // Lower temperature for consistency
-            Some(2000),
-        ).await.map_err(|e| format!("DeepSeek call failed: {}", e))?;
+        let response = self.llm_client.deepseek_complete()
+            .model("deepseek-chat")
+            .system(&system_prompt)
+            .user(&user_prompt)
+            .temperature(0.3) // Lower temperature for consistency
+            .max_tokens(2000)
+            .await.map_err(|e| format!("DeepSeek call failed: {}", e))?;
 
         self.parse_evaluation(&response)
     }
@@ -673,13 +673,13 @@ IMPORTANT:
         let system_prompt = self.build_system_prompt();
         let user_prompt = self.build_refinement_prompt(script, topic_brief, evaluation, force_dramatic_changes);
 
-        let response = self.llm_client.gemini_complete(
-            "gemini-3-flash-preview",
-            &system_prompt,
-            &user_prompt,
-            Some(temperature),
-            Some(8000),
-        ).await.map_err(|e| format!("Gemini refinement failed: {}", e))?;
+        let response = self.llm_client.gemini_complete()
+            .model("gemini-3-flash-preview")
+            .system(&system_prompt)
+            .user(&user_prompt)
+            .temperature(temperature)
+            .max_tokens(8000)
+            .await.map_err(|e| format!("Gemini refinement failed: {}", e))?;
 
         self.parse_script(&response, topic_brief.video_id)
     }

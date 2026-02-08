@@ -147,13 +147,13 @@ impl AsyncNodeLogic for SEOOptimizerLogic {
         let system_prompt = self.build_system_prompt();
         let user_prompt = self.build_user_prompt(&topic_brief, &script);
 
-        let response = match self.llm_client.deepseek_complete(
-            "deepseek-chat",
-            &system_prompt,
-            &user_prompt,
-            Some(0.6),
-            Some(2000),
-        ).await {
+        let response = match self.llm_client.deepseek_complete()
+            .model("deepseek-chat")
+            .system(&system_prompt)
+            .user(&user_prompt)
+            .temperature(0.6)
+            .max_tokens(2000)
+            .await {
             Ok(text) => text,
             Err(e) => return serde_json::json!({ "error": format!("LLM call failed: {}", e) }),
         };
