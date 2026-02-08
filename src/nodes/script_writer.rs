@@ -21,7 +21,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::bridge::dspy::DspyBridge;
 use crate::config::ScriptImprovementConfig;
 use crate::db;
 use crate::nodes::{
@@ -61,11 +60,6 @@ pub struct ScriptWriterLogic {
     pub improvement_config: ScriptImprovementConfig,
     pub llm_client: Arc<Client<Providers<orichalcum::llm::Disabled, Enabled, Enabled>>>,
     pub db_pool: Arc<PgPool>,
-    pub dspy_bridge: DspyBridge,
-    /// Whether to use DSPy for evaluation (can be disabled via env var)
-    pub use_dspy_judge: bool,
-    /// Probability (0.0-1.0) of skipping DSPy evaluation to explore new script styles
-    pub exploration_budget: f32,
 }
 
 impl ScriptWriterLogic {
@@ -75,31 +69,11 @@ impl ScriptWriterLogic {
         llm_client: Arc<Client<Providers<orichalcum::llm::Disabled, Enabled, Enabled>>>,
         db_pool: Arc<PgPool>,
     ) -> Self {
-        let dspy_bridge = DspyBridge::new();
-        let use_dspy_judge = std::env::var("USE_DSPY_JUDGE")
-            .map(|v| v.to_lowercase() != "false" && v != "0")
-            .unwrap_or(true) // Default to using DSPy if available
-            && dspy_bridge.is_available();
-        
-        let exploration_budget = std::env::var("DSPY_EXPLORATION_BUDGET")
-            .ok()
-            .and_then(|v| v.parse::<f32>().ok())
-            .unwrap_or(0.1); // Default to 10% exploration
-        
-        if use_dspy_judge {
-            info!("ScriptWriter: DSPy Judge enabled (Exploration Budget: {:.1}%)", exploration_budget * 100.0);
-        } else {
-            info!("ScriptWriter: Using hardcoded DeepSeek Judge (DSPy disabled or unavailable)");
-        }
-        
         Self { 
             config, 
             improvement_config, 
             llm_client, 
             db_pool,
-            dspy_bridge,
-            use_dspy_judge,
-            exploration_budget,
         }
     }
 
@@ -570,82 +544,13 @@ IMPORTANT:
         self.parse_script(&response, topic_brief.video_id)
     }
 
-    /// Evaluate a script using DSPy Judge (preferred) or DeepSeek fallback
+    /// Evaluate a script using DeepSeek
     async fn evaluate_script(&self, script: &Script, topic_brief: &TopicBrief) -> Result<ScriptEvaluation, String> {
-        // Check for exploration mode: bypass DSPy Judge randomly to ensure diversity
-        // Use video_id as a seed for deterministic exploration per video
-        let is_exploration = self.should_explore(topic_brief.video_id);
-        
-        // Try DSPy first if enabled and NOT in exploration mode
-        if self.use_dspy_judge && !is_exploration {
-            match self.evaluate_script_dspy(script, topic_brief).await {
-                Ok(eval) => {
-                    debug!("DSPy Judge returned score: {:.1}", eval.overall_score);
-                    return Ok(eval);
-                }
-                Err(e) => {
-                    warn!("DSPy Judge failed, falling back to DeepSeek: {}", e);
-                    // Fall through to DeepSeek
-                }
-            }
-        }
-        
-        if is_exploration && self.use_dspy_judge {
-            info!("ScriptWriter: Exploration Mode - Bypassing DSPy Judge for diversity");
-        }
-        
-        // Fallback: Use hardcoded DeepSeek prompt
+        // Use hardcoded DeepSeek prompt
         self.evaluate_script_deepseek(script, topic_brief).await
     }
 
-    /// Determine if we should explore (bypass DSPy) for this video
-    fn should_explore(&self, video_id: uuid::Uuid) -> bool {
-        // Use the first 4 bytes of the UUID as a pseudo-random seed
-        let bytes = video_id.as_bytes();
-        let seed = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        
-        // Normalize to 0.0-1.0
-        let roll = (seed as f32) / (u32::MAX as f32);
-        roll < self.exploration_budget
-    }
-    
-    /// Evaluate using the DSPy-optimized Judge
-    async fn evaluate_script_dspy(&self, script: &Script, topic_brief: &TopicBrief) -> Result<ScriptEvaluation, String> {
-        let script_json = serde_json::to_value(script)
-            .map_err(|e| format!("Failed to serialize script: {}", e))?;
-        let topic_json = serde_json::to_value(topic_brief)
-            .map_err(|e| format!("Failed to serialize topic brief: {}", e))?;
-        
-        let result = self.dspy_bridge.evaluate_script(&script_json, &topic_json).await?;
-        
-        // Convert DspyEvaluationResult to ScriptEvaluation
-        let criteria: CriteriaScores = serde_json::from_value(result.criteria.clone())
-            .unwrap_or_else(|_| CriteriaScores {
-                hook_strength: CriterionScore { score: 5.0, notes: String::new() },
-                pacing_retention: CriterionScore { score: 5.0, notes: String::new() },
-                wisdom_integration: CriterionScore { score: 5.0, notes: String::new() },
-                authenticity: CriterionScore { score: 5.0, notes: String::new() },
-                duration_accuracy: CriterionScore { score: 5.0, notes: String::new() },
-                cta_quality: CriterionScore { score: 5.0, notes: String::new() },
-                ai_detection: CriterionScore { score: 5.0, notes: String::new() },
-            });
-        
-        let specific_improvements: Vec<SpecificImprovement> = result.specific_improvements
-            .iter()
-            .filter_map(|v| serde_json::from_value(v.clone()).ok())
-            .collect();
-        
-        Ok(ScriptEvaluation {
-            overall_score: result.overall_score,
-            criteria,
-            strengths: result.strengths,
-            weaknesses: result.weaknesses,
-            ai_telltale_signs: result.ai_telltale_signs,
-            specific_improvements,
-        })
-    }
-    
-    /// Evaluate using hardcoded DeepSeek prompt (fallback)
+    /// Evaluate using hardcoded DeepSeek prompt
     async fn evaluate_script_deepseek(&self, script: &Script, topic_brief: &TopicBrief) -> Result<ScriptEvaluation, String> {
         let system_prompt = self.build_judge_system_prompt();
         let user_prompt = self.build_judge_user_prompt(script, topic_brief);
