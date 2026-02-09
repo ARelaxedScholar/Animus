@@ -23,6 +23,10 @@ use crate::utils;
 pub struct AssetCollectorConfig {
     /// Pexels API key
     pub pexels_api_key: String,
+    /// Leonardo.ai API key (optional)
+    pub leonardo_api_key: Option<String>,
+    /// Freesound.org API key (optional)
+    pub freesound_api_key: Option<String>,
     /// Stable Diffusion API URL (optional)
     pub sd_api_url: Option<String>,
     /// Minimum clips per section
@@ -33,10 +37,20 @@ impl Default for AssetCollectorConfig {
     fn default() -> Self {
         Self {
             pexels_api_key: String::new(),
+            leonardo_api_key: None,
+            freesound_api_key: None,
             sd_api_url: None,
             min_clips_per_section: 3,
         }
     }
+}
+
+/// Visual Intent for a section
+#[derive(Debug, Deserialize)]
+struct VisualIntent {
+    refined_pexels_queries: Vec<String>,
+    ai_image_prompt: String,
+    sfx_triggers: Vec<crate::nodes::SFXTrigger>,
 }
 
 /// Pexels video search response
@@ -70,17 +84,25 @@ struct PexelsVideoFile {
     height: Option<u32>,
 }
 
+use orichalcum::llm::{Client as LlmClient, Enabled, Providers};
+
 /// The asset collector node logic
 #[derive(Clone)]
 pub struct AssetCollectorLogic {
     pub config: AssetCollectorConfig,
     pub http_client: Arc<HttpClient>,
+    pub llm_client: Arc<LlmClient<Providers<orichalcum::llm::Disabled, Enabled, Enabled>>>,
     pub s3_client: Arc<S3Client>,
     pub db_pool: Arc<PgPool>,
 }
 
 impl AssetCollectorLogic {
-    pub fn new(config: AssetCollectorConfig, s3_client: Arc<S3Client>, db_pool: Arc<PgPool>) -> Self {
+    pub fn new(
+        config: AssetCollectorConfig,
+        llm_client: Arc<LlmClient<Providers<orichalcum::llm::Disabled, Enabled, Enabled>>>,
+        s3_client: Arc<S3Client>,
+        db_pool: Arc<PgPool>
+    ) -> Self {
         // Create HTTP client with reasonable timeouts for video downloads
         let http_client = HttpClient::builder()
             .timeout(std::time::Duration::from_secs(120)) // 2 minute timeout per download
@@ -91,6 +113,7 @@ impl AssetCollectorLogic {
         Self {
             config,
             http_client: Arc::new(http_client),
+            llm_client,
             s3_client,
             db_pool,
         }
@@ -170,8 +193,117 @@ impl AssetCollectorLogic {
         query
     }
 
-    /// Search Pexels for videos matching a query
-    async fn search_pexels_videos(&self, query: &str, per_page: u32) -> Result<Vec<PexelsVideo>, String> {
+    /// Enrich visual intent using Gemini Flash
+    async fn enrich_visual_intent(&self, section: &crate::nodes::ScriptSection) -> Result<VisualIntent, String> {
+        let system_prompt = r#"You are a visual director for a high-prestige philosophy YouTube channel. 
+Your job is to analyze script narration and visual suggestions to generate hyper-specific search queries and AI image prompts.
+
+Rules:
+1. Avoid literal/generic searches (e.g., if text mentions "time", don't just search "clock").
+2. Focus on atmospheric, metaphorical, and cinematic imagery.
+3. Generate refined Pexels queries that include lighting and style (e.g., "warm sunlight through ancient window dust motes").
+4. Generate a detailed AI image prompt for philosophical/historical scenes that stock footage can't cover.
+5. Identify sound effect (SFX) triggers for immersion. Use "texture" for loops and "punctuation" for hits.
+
+Return JSON only:
+{
+  "refined_pexels_queries": ["query1", "query2", "query3"],
+  "ai_image_prompt": "cinematic 4k render of...",
+  "sfx_triggers": [
+    { "sfx_type": "texture|punctuation", "sound": "...", "relative_time": 0.5, "volume": 0.3 }
+  ]
+}"#;
+
+        let user_prompt = format!(
+            "SECTION TITLE: {}\nNARRATION: {}\nCURRENT SUGGESTIONS: {:?}\nMOOD: {}",
+            section.title, section.narration, section.visual_suggestions, section.mood
+        );
+
+        let response = self.llm_client.gemini_complete()
+            .model("gemini-3-flash-preview")
+            .system(system_prompt)
+            .user(&user_prompt)
+            .temperature(0.7)
+            .await.map_err(|e| format!("Gemini enrichment failed: {}", e))?;
+
+        let cleaned = response.trim()
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim();
+
+        serde_json::from_str(cleaned).map_err(|e| format!("Failed to parse visual intent: {}. Response: {}", e, response))
+    }
+
+    /// Generate an image using Leonardo.ai
+    async fn generate_leonardo_image(&self, prompt: &str, video_id: &str, section_idx: usize) -> Result<AssetFile, String> {
+        let api_key = self.config.leonardo_api_key.as_ref().ok_or("No Leonardo.ai API key")?;
+        
+        info!("AssetCollector: Generating AI image with Leonardo.ai for section {}...", section_idx);
+
+        let payload = serde_json::json!({
+            "prompt": prompt,
+            "modelId": "b24e0cc2-a08b-43a1-975a-d4056d816695", // Leonardo Vision XL
+            "width": 1024,
+            "height": 576, // 16:9
+            "num_images": 1,
+            "alchemy": true,
+            "highResolution": true
+        });
+
+        let response = self.http_client
+            .post("https://cloud.leonardo.ai/api/rest/v1/generations")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| format!("Leonardo generation request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(format!("Leonardo API error: {}", response.status()));
+        }
+
+        let gen_res: serde_json::Value = response.json().await.map_err(|e| format!("Failed to parse Leonardo response: {}", e))?;
+        let generation_id = gen_res["sdGenerationJob"]["generationId"].as_str().ok_or("No generation ID in response")?;
+
+        // Poll for completion
+        let mut image_url = None;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let poll_res = self.http_client
+                .get(format!("https://cloud.leonardo.ai/api/rest/v1/generations/{}", generation_id))
+                .header("Authorization", format!("Bearer {}", api_key))
+                .send()
+                .await
+                .map_err(|e| format!("Leonardo poll failed: {}", e))?;
+            
+            let poll_json: serde_json::Value = poll_res.json().await.map_err(|e| format!("Failed to parse poll response: {}", e))?;
+            let status = poll_json["generations_by_pk"]["status"].as_str().unwrap_or("PENDING");
+            
+            if status == "COMPLETE" {
+                image_url = poll_json["generations_by_pk"]["generated_images"][0]["url"].as_str().map(|s| s.to_string());
+                break;
+            }
+        }
+
+        let url = image_url.ok_or("Leonardo generation timed out or failed")?;
+        
+        // Download and upload to S3
+        let img_data = self.http_client.get(&url).send().await
+            .map_err(|e| format!("Failed to download AI image: {}", e))?
+            .bytes().await.map_err(|e| format!("Failed to read AI image bytes: {}", e))?;
+
+        let key = format!("assets/{}/section_{}/ai_image.png", video_id, section_idx);
+        self.s3_client.upload_bytes(&key, img_data.to_vec(), "image/png").await
+            .map_err(|e| format!("Failed to upload AI image to S3: {}", e))?;
+
+        Ok(AssetFile {
+            path: key,
+            source: "leonardo_ai".to_string(),
+            duration_seconds: None,
+            description: prompt.to_string(),
+        })
+    }
         // Clean up the query for better search results
         let cleaned_query = Self::clean_search_query(query);
         
@@ -339,18 +471,32 @@ impl AsyncNodeLogic for AssetCollectorLogic {
                 section_idx + 1, total_sections, section.title
             );
             
-            let mut video_clips: Vec<AssetFile> = Vec::new();
+            // Step 1: Enrich visual intent
+            let intent = match self.enrich_visual_intent(section).await {
+                Ok(i) => i,
+                Err(e) => {
+                    warn!("Failed to enrich visual intent for section {}: {}", section_idx, e);
+                    VisualIntent {
+                        refined_pexels_queries: section.visual_suggestions.clone(),
+                        ai_image_prompt: format!("Cinematic shot of {}", section.title),
+                        sfx_triggers: section.sfx_triggers.clone(),
+                    }
+                }
+            };
 
-            for (suggestion_idx, suggestion) in section.visual_suggestions.iter().enumerate() {
-                // Search Pexels for this visual suggestion
-                match self.search_pexels_videos(suggestion, 3).await {
+            let mut video_clips: Vec<AssetFile> = Vec::new();
+            let mut images: Vec<AssetFile> = Vec::new();
+
+            // Step 2: Search and download Pexels clips
+            for (query_idx, query) in intent.refined_pexels_queries.iter().enumerate() {
+                match self.search_pexels_videos(query, 3).await {
                     Ok(videos) => {
                         for (clip_idx, video) in videos.iter().take(2).enumerate() {
                             match self.download_and_upload_video(
                                 video,
                                 &video_id,
                                 section_idx,
-                                suggestion_idx * 10 + clip_idx,
+                                query_idx * 10 + clip_idx,
                             ).await {
                                 Ok(asset) => {
                                     video_clips.push(asset);
@@ -360,22 +506,30 @@ impl AsyncNodeLogic for AssetCollectorLogic {
                             }
                         }
                     }
-                    Err(e) => warn!("Pexels search failed for '{}': {}", suggestion, e),
+                    Err(e) => warn!("Pexels search failed for '{}': {}", query, e),
                 }
 
-                // Rate limiting
-                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                if video_clips.len() >= 4 { break; } // Sufficient B-roll
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+
+            // Step 3: AI Image fallback if clips are sparse
+            if video_clips.is_empty() || video_clips.len() < 2 {
+                match self.generate_leonardo_image(&intent.ai_image_prompt, &video_id, section_idx).await {
+                    Ok(img) => images.push(img),
+                    Err(e) => warn!("AI image generation failed: {}", e),
+                }
             }
             
             info!(
-                "AssetCollector: Section {}/{} complete - {} clips",
-                section_idx + 1, total_sections, video_clips.len()
+                "AssetCollector: Section {}/{} complete - {} clips, {} images",
+                section_idx + 1, total_sections, video_clips.len(), images.len()
             );
 
             section_assets.push(SectionAssets {
                 section_title: section.title.clone(),
                 video_clips,
-                images: vec![], // Could add Stable Diffusion images here
+                images,
             });
         }
         

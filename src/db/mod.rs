@@ -2,9 +2,11 @@
 
 pub mod models;
 pub mod queries;
+pub mod accounts;
 
 pub use models::{Video, VideoStatus};
 pub use queries::*;
+pub use accounts::*;
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;

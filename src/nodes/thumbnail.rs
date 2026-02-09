@@ -3,12 +3,13 @@
 //! Creates eye-catching thumbnails using HTML templates and optional AI generation.
 
 use async_trait::async_trait;
+use orichalcum::llm::{Client, Enabled, Providers};
 use orichalcum::{AsyncNodeLogic, NodeValue};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::db;
 use crate::nodes::TopicBrief;
@@ -24,6 +25,8 @@ pub struct ThumbnailConfig {
     pub width: u32,
     /// Output height
     pub height: u32,
+    /// Prompt prefix for Imagen
+    pub prompt_prefix: String,
 }
 
 impl Default for ThumbnailConfig {
@@ -32,6 +35,7 @@ impl Default for ThumbnailConfig {
             template_dir: "templates/thumbnails".to_string(),
             width: 1280,
             height: 720,
+            prompt_prefix: "A high-quality, cinematic YouTube thumbnail for a video titled:".to_string(),
         }
     }
 }
@@ -40,22 +44,61 @@ impl Default for ThumbnailConfig {
 #[derive(Clone)]
 pub struct ThumbnailLogic {
     pub config: ThumbnailConfig,
+    pub llm_client: Arc<Client<Providers<orichalcum::llm::Disabled, Enabled, Enabled>>>,
     pub s3_client: Arc<S3Client>,
     pub db_pool: Arc<PgPool>,
 }
 
 impl ThumbnailLogic {
-    pub fn new(config: ThumbnailConfig, s3_client: Arc<S3Client>, db_pool: Arc<PgPool>) -> Self {
-        Self { config, s3_client, db_pool }
+    pub fn new(
+        config: ThumbnailConfig,
+        llm_client: Arc<Client<Providers<orichalcum::llm::Disabled, Enabled, Enabled>>>,
+        s3_client: Arc<S3Client>,
+        db_pool: Arc<PgPool>,
+    ) -> Self {
+        Self {
+            config,
+            llm_client,
+            s3_client,
+            db_pool,
+        }
     }
 
-    /// Generate a simple gradient thumbnail with text overlay
-    /// In production, this would use Puppeteer/Playwright to render HTML templates
+    /// Generate a thumbnail using Gemini/Imagen
+    async fn generate_imagen_thumbnail(
+        &self,
+        title: &str,
+        _video_id: &str,
+    ) -> Result<Vec<u8>, String> {
+        info!("Thumbnail: Calling Gemini/Imagen for '{}'", title);
+
+        let prompt = format!(
+            "{} '{}'. Eye-catching, high contrast, vibrant colors, 4k, professional photography style, minimal text.",
+            self.config.prompt_prefix,
+            title
+        );
+
+        // Call Gemini for image generation
+        let image_res = self.llm_client
+            .gemini()
+            .generate_image(&prompt)
+            .await
+            .map_err(|e| format!("Imagen generation failed: {}", e))?;
+
+        if image_res.is_empty() {
+            return Err("Imagen returned empty image data".to_string());
+        }
+
+        Ok(image_res)
+    }
+
+    /// Fallback: Generate a simple gradient thumbnail with text overlay
     async fn generate_simple_thumbnail(
         &self,
         _title: &str,
         _video_id: &str,
     ) -> Result<Vec<u8>, String> {
+        warn!("Thumbnail: Using fallback gradient thumbnail");
         use image::{Rgb, RgbImage};
         use std::io::Cursor;
 
@@ -119,10 +162,16 @@ impl AsyncNodeLogic for ThumbnailLogic {
 
         info!("Thumbnail: Generating thumbnail for '{}'", title);
 
-        // Generate thumbnail
-        let thumbnail_bytes = match self.generate_simple_thumbnail(&title, &video_id).await {
+        // Try Imagen first, fallback to simple gradient
+        let thumbnail_bytes = match self.generate_imagen_thumbnail(&title, &video_id).await {
             Ok(bytes) => bytes,
-            Err(e) => return serde_json::json!({ "error": format!("Thumbnail generation failed: {}", e) }),
+            Err(e) => {
+                error!("Thumbnail: Imagen failed, falling back: {}", e);
+                match self.generate_simple_thumbnail(&title, &video_id).await {
+                    Ok(bytes) => bytes,
+                    Err(e) => return serde_json::json!({ "error": format!("Thumbnail generation failed: {}", e) }),
+                }
+            }
         };
 
         // Upload to S3

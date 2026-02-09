@@ -109,6 +109,7 @@ impl VideoProductionFlow {
         ));
         let asset_collector_node = AsyncNode::new(AssetCollectorLogic::new(
             asset_collector_config,
+            llm_client.clone(),
             s3_client.clone(),
             db_pool.clone(),
         ));
@@ -119,6 +120,7 @@ impl VideoProductionFlow {
         ));
         let thumbnail_node = AsyncNode::new(ThumbnailLogic::new(
             thumbnail_config,
+            llm_client.clone(),
             s3_client.clone(),
             db_pool.clone(),
         ));

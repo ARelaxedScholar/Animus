@@ -26,8 +26,10 @@ __pycache__/
 # Temporary files
 *.tmp
 *.bak
-# Animus specific state
+# Animus specific state / Secrets
 tokens.json
+credentials.json
+client_secret.json
 training_data.jsonl
 models/dspy/
 outputs/

@@ -19,12 +19,8 @@ use crate::storage::S3Client;
 /// Configuration for YouTube publishing
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublisherConfig {
-    /// YouTube OAuth client ID
-    pub client_id: String,
-    /// YouTube OAuth client secret  
-    pub client_secret: String,
-    /// Refresh token for OAuth
-    pub refresh_token: String,
+    /// Default YouTube account ID to use (if not specified in shared state)
+    pub default_account_id: Option<i32>,
     /// Default category ID (22 = People & Blogs, 27 = Education)
     pub default_category_id: String,
     /// Default privacy status
@@ -34,9 +30,7 @@ pub struct PublisherConfig {
 impl Default for PublisherConfig {
     fn default() -> Self {
         Self {
-            client_id: String::new(),
-            client_secret: String::new(),
-            refresh_token: String::new(),
+            default_account_id: None,
             default_category_id: "27".to_string(), // Education
             default_privacy: "private".to_string(), // Start private for review
         }
@@ -97,6 +91,16 @@ impl PublisherLogic {
             .map_err(|e| format!("Database error: {}", e))?
             .ok_or_else(|| "Video not found".to_string())?;
         
+        // Find which account to use
+        let account_id = video.youtube_account_id
+            .or(self.config.default_account_id)
+            .ok_or_else(|| "No YouTube account associated with this video".to_string())?;
+
+        let account = db::accounts::get_account(&self.db_pool, account_id)
+            .await
+            .map_err(|e| format!("Failed to fetch account: {}", e))?
+            .ok_or_else(|| format!("Account {} not found", account_id))?;
+
         // Check if it has a video path
         let video_path = video.video_path
             .ok_or_else(|| "Video has no S3 path - not yet assembled".to_string())?;
@@ -107,7 +111,7 @@ impl PublisherLogic {
             .and_then(|v| serde_json::from_value(v).map_err(|e| format!("Invalid SEO metadata: {}", e)))?;
         
         // Get access token
-        let access_token = self.get_access_token().await
+        let access_token = self.get_access_token(&account).await
             .map_err(|e| format!("Failed to get access token: {}", e))?;
         
         // Download video from S3
@@ -119,6 +123,7 @@ impl PublisherLogic {
         // Upload to YouTube
         info!("Publisher: Uploading to YouTube - '{}'", seo_metadata.title);
         let youtube_video_id = self.upload_video(
+            &account,
             &access_token,
             video_data,
             &seo_metadata,
@@ -153,13 +158,13 @@ impl PublisherLogic {
     }
 
     /// Refresh the OAuth access token
-    async fn get_access_token(&self) -> Result<String, String> {
+    async fn get_access_token(&self, account: &db::accounts::YouTubeAccount) -> Result<String, String> {
         let response = self.http_client
             .post("https://oauth2.googleapis.com/token")
             .form(&[
-                ("client_id", &self.config.client_id),
-                ("client_secret", &self.config.client_secret),
-                ("refresh_token", &self.config.refresh_token),
+                ("client_id", &account.client_id),
+                ("client_secret", &account.client_secret),
+                ("refresh_token", &account.refresh_token),
                 ("grant_type", &"refresh_token".to_string()),
             ])
             .send()
@@ -180,6 +185,7 @@ impl PublisherLogic {
     /// Upload a video to YouTube using resumable upload
     async fn upload_video(
         &self,
+        _account: &db::accounts::YouTubeAccount,
         access_token: &str,
         video_data: Vec<u8>,
         metadata: &SEOMetadata,
@@ -297,18 +303,39 @@ impl AsyncNodeLogic for PublisherLogic {
         let thumbnail_path = shared.get(state_keys::THUMBNAIL_PATH).cloned().unwrap_or(serde_json::json!(null));
         let seo_metadata = shared.get(state_keys::SEO_METADATA).cloned().unwrap_or(serde_json::json!(null));
         let scheduled_publish = shared.get("scheduled_publish").cloned();
+        let youtube_account_id = shared.get("youtube_account_id").cloned();
 
         serde_json::json!({
             "video_path": video_path,
             "thumbnail_path": thumbnail_path,
             "seo_metadata": seo_metadata,
             "scheduled_publish": scheduled_publish,
+            "youtube_account_id": youtube_account_id,
             "is_autonomous": shared.get("is_autonomous").cloned().unwrap_or(serde_json::json!(true))
         })
     }
 
     async fn exec(&self, input: NodeValue) -> NodeValue {
         let is_autonomous = input.get("is_autonomous").and_then(|v| v.as_bool()).unwrap_or(true);
+        
+        let account_id = input.get("youtube_account_id")
+            .and_then(|v| v.as_i64())
+            .map(|id| id as i32)
+            .or(self.config.default_account_id)
+            .ok_or_else(|| "No YouTube account ID provided".to_string());
+
+        let account_id = match account_id {
+            Ok(id) => id,
+            Err(e) => return serde_json::json!({ "error": e }),
+        };
+
+        // Fetch account from DB
+        let account = match db::accounts::get_account(&self.db_pool, account_id).await {
+            Ok(Some(a)) => a,
+            Ok(None) => return serde_json::json!({ "error": format!("Account {} not found", account_id) }),
+            Err(e) => return serde_json::json!({ "error": format!("Database error: {}", e) }),
+        };
+
         let video_path = match input.get("video_path").and_then(|v| v.as_str()) {
             Some(p) => p.to_string(),
             None => return serde_json::json!({ "error": "No video path provided" }),
@@ -327,10 +354,10 @@ impl AsyncNodeLogic for PublisherLogic {
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc));
 
-        info!("Publisher: Uploading video to YouTube - '{}'", seo_metadata.title);
+        info!("Publisher: Uploading video to YouTube account '{}' - '{}'", account.name, seo_metadata.title);
 
         // Get access token
-        let access_token = match self.get_access_token().await {
+        let access_token = match self.get_access_token(&account).await {
             Ok(t) => t,
             Err(e) => return serde_json::json!({ "error": format!("Failed to get access token: {}", e) }),
         };
@@ -341,8 +368,9 @@ impl AsyncNodeLogic for PublisherLogic {
             Err(e) => return serde_json::json!({ "error": format!("Failed to download video: {}", e) }),
         };
 
-        // Upload to YouTube
+        // Upload main video to YouTube
         let youtube_video_id = match self.upload_video(
+            &account,
             &access_token,
             video_data,
             &seo_metadata,
@@ -351,6 +379,23 @@ impl AsyncNodeLogic for PublisherLogic {
             Ok(id) => id,
             Err(e) => return serde_json::json!({ "error": format!("YouTube upload failed: {}", e) }),
         };
+
+        // --- SHORTS UPLOAD ---
+        if let Some(shorts_path) = input.get("shorts_path").and_then(|v| v.as_str()) {
+            info!("Publisher: Uploading Short to YouTube...");
+            if let Ok(shorts_data) = self.s3_client.download_bytes(shorts_path).await {
+                let mut shorts_metadata = seo_metadata.clone();
+                shorts_metadata.title = format!("{} #shorts", shorts_metadata.title);
+                
+                let _ = self.upload_video(
+                    &account,
+                    &access_token,
+                    shorts_data,
+                    &shorts_metadata,
+                    None, // Upload shorts immediately
+                ).await;
+            }
+        }
 
         // Upload thumbnail if available
         if let Some(thumb_path) = thumbnail_path {
@@ -374,6 +419,7 @@ impl AsyncNodeLogic for PublisherLogic {
             "youtube_video_id": youtube_video_id,
             "youtube_url": format!("https://www.youtube.com/watch?v={}", youtube_video_id),
             "title": seo_metadata.title,
+            "youtube_account_id": account_id,
             "is_autonomous": is_autonomous
         })
     }
@@ -441,6 +487,15 @@ impl AsyncNodeLogic for PublisherLogic {
         // Mark video as published in database
         if let Some(vid) = shared.get(state_keys::VIDEO_ID).and_then(|v| v.as_str()) {
             if let Ok(video_id) = uuid::Uuid::parse_str(vid) {
+                // Update account ID if we have it
+                if let Some(acc_id) = exec_res.get("youtube_account_id").and_then(|v| v.as_i64()) {
+                    let _ = sqlx::query!(
+                        "UPDATE videos SET youtube_account_id = $1 WHERE id = $2",
+                        acc_id as i32,
+                        video_id
+                    ).execute(&*self.db_pool).await;
+                }
+
                 if let Err(e) = db::mark_video_published(
                     &self.db_pool,
                     video_id,

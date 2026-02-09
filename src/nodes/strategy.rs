@@ -261,13 +261,17 @@ Respond in JSON format."#,
     }
 
     /// Build the user prompt for a specific source focus
-    fn build_user_prompt(&self, source_focus: &str, seed_topic: Option<&str>) -> String {
+    fn build_user_prompt(&self, source_focus: &str, seed_topic: Option<&str>, library_seed: Option<&str>) -> String {
         let seed_section = seed_topic
             .map(|t| format!("\n\nThe user has specifically requested this seed topic: \"{}\".\nBuild the topic brief around this theme.", t))
             .unwrap_or_default();
 
+        let library_section = library_seed
+            .map(|s| format!("\n\nBASE MATERIAL FROM LIBRARY:\n\"{}\"\nUse this obscure but powerful source material as the primary inspiration.", s))
+            .unwrap_or_default();
+
         format!(
-            r#"Generate a compelling video topic brief focusing on {} wisdom.{}
+            r#"Generate a compelling video topic brief focusing on {} wisdom.{}{}
 
 Select themes that resonate with modern struggles while drawing from timeless wisdom.
 
@@ -286,9 +290,11 @@ Return a JSON object with this structure:
     "hook_angle": "The specific angle or question that will hook viewers in the first 30 seconds"
 }}"#,
             source_focus,
-            seed_section
+            seed_section,
+            library_section
         )
     }
+
 }
 
 #[async_trait]
@@ -365,8 +371,19 @@ impl AsyncNodeLogic for StrategyLogic {
         let seed_topic = input.get("seed_topic")
             .and_then(|v| v.as_str());
 
+        // Fetch a seed from the wisdom library if no explicit seed topic is provided
+        let mut library_seed = None;
+        if seed_topic.is_none() {
+            if let Ok(Some((chunk, author, title))) = sqlx::query_as::<_, (String, String, String)>(
+                "SELECT content_chunk, author, title FROM wisdom_library ORDER BY random() LIMIT 1"
+            ).fetch_optional(&*self.db_pool).await {
+                info!("Strategy: Using library seed from {}'s '{}'", author, title);
+                library_seed = Some(format!("{} (from '{}' by {})", chunk, title, author));
+            }
+        }
+
         let system_prompt = self.build_system_prompt();
-        let user_prompt = self.build_user_prompt(source_focus, seed_topic);
+        let user_prompt = self.build_user_prompt(source_focus, seed_topic, library_seed.as_deref());
 
         // Call DeepSeek for topic generation
         let response = match self.llm_client.deepseek_complete()

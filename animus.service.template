@@ -1,0 +1,18 @@
+[Unit]
+Description=Animus Video Production Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=$(whoami)
+WorkingDirectory=$(pwd)
+# ExecStart points to the nix develop shell command or cargo directly
+ExecStart=/usr/bin/env cargo run --release
+Restart=always
+RestartSec=10
+EnvironmentFile=$(pwd)/.env
+StandardOutput=append:$(pwd)/daemon.log
+StandardError=append:$(pwd)/daemon.log
+
+[Install]
+WantedBy=multi-user.target

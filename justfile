@@ -14,6 +14,10 @@ dev-down:
 migrate:
     sqlx migrate run
 
+# Authenticate a new YouTube account
+auth-account name niche *args:
+    cargo run --bin auth-helper -- --name "{{name}}" --niche "{{niche}}" {{args}}
+
 # Create a new migration
 migration name:
     sqlx migrate add {{name}}

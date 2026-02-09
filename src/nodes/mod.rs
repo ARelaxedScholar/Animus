@@ -98,6 +98,8 @@ pub struct Script {
     pub total_duration_seconds: u32,
     /// Full script text (for TTS)
     pub full_text: String,
+    /// Index of the section chosen for Shorts (0 = hook, 1..N = sections, N+1 = cta)
+    pub shorts_candidate_index: Option<usize>,
 }
 
 /// A section of the script
@@ -111,6 +113,25 @@ pub struct ScriptSection {
     pub duration_seconds: u32,
     /// Visual suggestions for B-roll
     pub visual_suggestions: Vec<String>,
+    /// Atmospheric mood (e.g., "somber", "hopeful", "intense")
+    #[serde(default)]
+    pub mood: String,
+    /// SFX triggers for this section
+    #[serde(default)]
+    pub sfx_triggers: Vec<SFXTrigger>,
+}
+
+/// A sound effect trigger
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SFXTrigger {
+    /// Type of sound (texture, punctuation)
+    pub sfx_type: String,
+    /// Sound description (e.g., "thunder", "quill_scratching")
+    pub sound: String,
+    /// Relative timing (0.0 to 1.0) within the section
+    pub relative_time: f32,
+    /// Volume multiplier (0.0 to 1.0)
+    pub volume: f32,
 }
 
 /// Audio timing data from TTS

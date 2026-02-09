@@ -51,6 +51,7 @@ struct BridgeInput {
     asset_manifest: AssetManifest,
     audio_timing: AudioTiming,
     output_path: String,
+    mode: String, // "horizontal" or "short"
     config: BridgeConfig,
 }
 
@@ -170,10 +171,11 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
         let output_path = format!("{}/output.mp4", temp_dir);
         let bridge_input = BridgeInput {
             video_id: video_id.clone(),
-            audio_path: local_audio_path,
-            asset_manifest: local_manifest,
-            audio_timing,
+            audio_path: local_audio_path.clone(),
+            asset_manifest: local_manifest.clone(),
+            audio_timing: audio_timing.clone(),
             output_path: output_path.clone(),
+            mode: "horizontal".to_string(),
             config: BridgeConfig {
                 width: self.config.output_width,
                 height: self.config.output_height,
@@ -181,83 +183,53 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
             },
         };
 
-        // Call Python bridge
-        let input_json = match serde_json::to_string(&bridge_input) {
-            Ok(j) => j,
-            Err(e) => return serde_json::json!({ "error": format!("Failed to serialize bridge input: {}", e) }),
-        };
-
-        info!("VideoAssembler: Spawning Python bridge with {} bytes of input", input_json.len());
-
-        let mut child = match Command::new("python3")
-            .arg(&self.config.bridge_script_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn() {
-            Ok(c) => c,
-            Err(e) => return serde_json::json!({ "error": format!("Failed to spawn Python: {}", e) }),
-        };
-
-        // Write input to stdin BEFORE waiting
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            if let Err(e) = stdin.write_all(input_json.as_bytes()).await {
-                return serde_json::json!({ "error": format!("Failed to write to Python stdin: {}", e) });
-            }
-            // Explicitly drop stdin to signal EOF to Python
-            std::mem::drop(stdin);
-        }
-
-        // Wait for process with basic wait_with_output
-        let output = match child.wait_with_output().await {
-            Ok(o) => o,
-            Err(e) => return serde_json::json!({ "error": format!("Failed to wait for Python: {}", e) }),
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let exit_code = output.status.code().map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string());
-            
-            error!("Python bridge failed. Exit code: {}, stdout: {}, stderr: {}", exit_code, stdout, stderr);
-            
-            // Try to parse stdout as JSON error response (the bridge writes errors to stdout as JSON)
-            if let Ok(bridge_output) = serde_json::from_str::<BridgeOutput>(&stdout) {
-                if let Some(err) = bridge_output.error {
-                    return serde_json::json!({ "error": err });
-                }
-            }
-            
-            return serde_json::json!({ 
-                "error": format!(
-                    "Python process failed (exit {}). stderr: {}. stdout: {}", 
-                    exit_code, 
-                    if stderr.is_empty() { "<empty>" } else { stderr.as_ref() },
-                    if stdout.is_empty() { "<empty>" } else { stdout.as_ref() }
-                ) 
-            });
-        }
-
-        // Parse output
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let bridge_output: BridgeOutput = match serde_json::from_str(&stdout) {
-            Ok(o) => o,
-            Err(e) => return serde_json::json!({ 
-                "error": format!("Failed to parse Python output: {}. Output: {}", e, stdout) 
-            }),
-        };
-
-        if !bridge_output.success {
-            return serde_json::json!({ 
-                "error": bridge_output.error.unwrap_or_else(|| "Unknown error".to_string()) 
-            });
-        }
-
+        // Call Python bridge for main video
+        let main_result = self.run_bridge(&bridge_input).await?;
+        
         // Upload final video to S3
         let s3_video_path = format!("videos/{}/{}.mp4", video_id, video_id);
         if let Err(e) = self.upload_to_s3(&output_path, &s3_video_path).await {
             return serde_json::json!({ "error": format!("Failed to upload video: {}", e) });
+        }
+
+        // --- SHORTS RENDERING ---
+        let mut shorts_path = None;
+        if let Some(script) = input.get("script").and_then(|v| serde_json::from_value::<crate::nodes::Script>(v.clone()).ok()) {
+            if let Some(idx) = script.shorts_candidate_index {
+                info!("VideoAssembler: Rendering vertical Short from section {}...", idx);
+                let shorts_output_path = format!("{}/short.mp4", temp_dir);
+                
+                // Construct a manifest for just the Short
+                let mut short_manifest = local_manifest.clone();
+                let section_assets = short_manifest.section_assets.get(idx).cloned().unwrap_or(SectionAssets {
+                    section_title: "Short".to_string(),
+                    video_clips: vec![],
+                    images: vec![],
+                });
+                short_manifest.section_assets = vec![section_assets];
+
+                let short_bridge_input = BridgeInput {
+                    video_id: format!("{}_short", video_id),
+                    audio_path: local_audio_path,
+                    asset_manifest: short_manifest,
+                    audio_timing, // Ideally we'd slice this too
+                    output_path: shorts_output_path.clone(),
+                    mode: "short".to_string(),
+                    config: BridgeConfig {
+                        width: 1080,
+                        height: 1920,
+                        fps: self.config.output_fps,
+                    },
+                };
+
+                if let Ok(_) = self.run_bridge(&short_bridge_input).await {
+                    let s3_short_path = format!("videos/{}/short.mp4", video_id);
+                    if let Ok(_) = self.upload_to_s3(&shorts_output_path, &s3_short_path).await {
+                        shorts_path = Some(s3_short_path);
+                        info!("VideoAssembler: Vertical Short uploaded successfully");
+                    }
+                }
+            }
         }
 
         // Clean up temp directory
@@ -266,9 +238,38 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
         serde_json::json!({
             "success": true,
             "video_path": s3_video_path,
-            "duration_seconds": bridge_output.duration_seconds,
+            "shorts_path": shorts_path,
+            "duration_seconds": main_result.duration_seconds,
             "video_id": video_id
         })
+    }
+
+    /// Run the Python bridge and parse output
+    async fn run_bridge(&self, input: &BridgeInput) -> Result<BridgeOutput, String> {
+        let input_json = serde_json::to_string(input).map_err(|e| e.to_string())?;
+        
+        let mut child = Command::new("python3")
+            .arg(&self.config.bridge_script_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn Python: {}", e))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(input_json.as_bytes()).await.map_err(|e| e.to_string())?;
+            std::mem::drop(stdin);
+        }
+
+        let output = child.wait_with_output().await.map_err(|e| e.to_string())?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        
+        if !output.status.success() {
+            return Err(format!("Python bridge failed: {}", stdout));
+        }
+
+        serde_json::from_str(&stdout).map_err(|e| format!("Failed to parse output: {}", e))
     }
 
     async fn post(
@@ -295,18 +296,22 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
             shared.insert(state_keys::VIDEO_PATH.to_string(), video_path.clone());
             info!("VideoAssembler: Video assembled successfully");
             
-            // Persist video_path to database
+            if let Some(shorts_path) = exec_res.get("shorts_path") {
+                shared.insert("shorts_path".to_string(), shorts_path.clone());
+            }
+
+            // Persist video_path and shorts_path to database
             if let Some(vid) = exec_res.get("video_id").and_then(|v| v.as_str()) {
                 if let Ok(video_id) = uuid::Uuid::parse_str(vid) {
                     if let Some(path_str) = video_path.as_str() {
-                        if let Err(e) = db::update_video_text_field(
-                            &self.db_pool,
-                            video_id,
-                            "video_path",
-                            path_str,
-                        ).await {
-                            error!("Failed to persist video_path to database: {}", e);
-                        }
+                        let _ = db::update_video_text_field(&self.db_pool, video_id, "video_path", path_str).await;
+                    }
+                    if let Some(shorts_str) = exec_res.get("shorts_path").and_then(|v| v.as_str()) {
+                        // We need a helper for shorts_path or use a custom query
+                        let _ = sqlx::query("UPDATE videos SET shorts_path = $1 WHERE id = $2")
+                            .bind(shorts_str)
+                            .bind(video_id)
+                            .execute(&*self.db_pool).await;
                     }
                 }
             }

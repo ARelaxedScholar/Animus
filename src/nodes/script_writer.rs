@@ -167,29 +167,41 @@ Return a JSON object with this structure:
         "title": "Hook",
         "narration": "The complete hook script (first 30-45 seconds)...",
         "duration_seconds": 30,
-        "visual_suggestions": ["suggestion1", "suggestion2"]
+        "visual_suggestions": ["suggestion1", "suggestion2"],
+        "mood": "...",
+        "sfx_triggers": [
+            {{ "sfx_type": "texture|punctuation", "sound": "...", "relative_time": 0.5, "volume": 0.5 }}
+        ]
     }},
     "sections": [
         {{
             "title": "Section Title",
             "narration": "The complete section narration...",
             "duration_seconds": 180,
-            "visual_suggestions": ["suggestion1", "suggestion2"]
+            "visual_suggestions": ["suggestion1", "suggestion2"],
+            "mood": "...",
+            "sfx_triggers": [...]
         }}
     ],
     "cta": {{
         "title": "Call to Action",
         "narration": "The closing CTA...",
         "duration_seconds": 30,
-        "visual_suggestions": ["suggestion1"]
-    }}
+        "visual_suggestions": ["suggestion1"],
+        "mood": "...",
+        "sfx_triggers": [...]
+    }},
+    "shorts_candidate_index": 0
 }}
 
 IMPORTANT:
 - The total narration should be approximately {} words
 - Include 4-6 main sections plus hook and CTA
 - Each section should be 2-4 minutes of content
-- Make visual suggestions specific and evocative"#,
+- Make visual suggestions specific and evocative
+- MOOD: Define the emotional atmosphere for each section
+- SFX_TRIGGERS: Add immersive sound effects. Use "texture" for loops (wind, rain) and "punctuation" for impact sounds (deep bass, chime).
+- SHORTS_CANDIDATE_INDEX: Pick the most viral-worthy 60-second window (0 for hook, 1..N for sections, N+1 for CTA)"#,
             topic_brief.topic,
             topic_brief.description,
             topic_brief.hook_angle,
@@ -416,6 +428,18 @@ IMPORTANT:
                     .iter()
                     .filter_map(|s| s.as_str().map(|s| s.to_string()))
                     .collect(),
+                mood: v.get("mood").and_then(|m| m.as_str()).unwrap_or("neutral").to_string(),
+                sfx_triggers: v.get("sfx_triggers")
+                    .and_then(|a| a.as_array())
+                    .map(|arr| arr.iter().filter_map(|t| {
+                        Some(crate::nodes::SFXTrigger {
+                            sfx_type: t.get("sfx_type")?.as_str()?.to_string(),
+                            sound: t.get("sound")?.as_str()?.to_string(),
+                            relative_time: t.get("relative_time")?.as_f64()? as f32,
+                            volume: t.get("volume")?.as_f64()? as f32,
+                        })
+                    }).collect())
+                    .unwrap_or_default(),
             })
         };
 
@@ -426,6 +450,8 @@ IMPORTANT:
                 narration: String::new(),
                 duration_seconds: 30,
                 visual_suggestions: vec![],
+                mood: "neutral".to_string(),
+                sfx_triggers: vec![],
             });
 
         let sections: Vec<ScriptSection> = parsed.get("sections")
@@ -440,6 +466,8 @@ IMPORTANT:
                 narration: String::new(),
                 duration_seconds: 30,
                 visual_suggestions: vec![],
+                mood: "neutral".to_string(),
+                sfx_triggers: vec![],
             });
 
         // Build full text
@@ -456,6 +484,10 @@ IMPORTANT:
             + sections.iter().map(|s| s.duration_seconds).sum::<u32>()
             + cta.duration_seconds;
 
+        let shorts_candidate_index = parsed.get("shorts_candidate_index")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
         Ok(Script {
             video_id,
             hook,
@@ -463,6 +495,7 @@ IMPORTANT:
             cta,
             total_duration_seconds: total_duration,
             full_text,
+            shorts_candidate_index,
         })
     }
 
