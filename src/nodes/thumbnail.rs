@@ -72,24 +72,8 @@ impl ThumbnailLogic {
     ) -> Result<Vec<u8>, String> {
         info!("Thumbnail: Calling Gemini/Imagen for '{}'", title);
 
-        let prompt = format!(
-            "{} '{}'. Eye-catching, high contrast, vibrant colors, 4k, professional photography style, minimal text.",
-            self.config.prompt_prefix,
-            title
-        );
-
-        // Call Gemini for image generation
-        let image_res = self.llm_client
-            .gemini()
-            .generate_image(&prompt)
-            .await
-            .map_err(|e| format!("Imagen generation failed: {}", e))?;
-
-        if image_res.is_empty() {
-            return Err("Imagen returned empty image data".to_string());
-        }
-
-        Ok(image_res)
+        // TODO: Implement Gemini Imagen generation
+        return Err("Imagen generation not implemented".to_string());
     }
 
     /// Fallback: Generate a simple gradient thumbnail with text overlay

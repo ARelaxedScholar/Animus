@@ -13,7 +13,7 @@ use tokio::process::Command;
 use tracing::{error, info, warn};
 
 use crate::db;
-use crate::nodes::{AssetManifest, AudioTiming};
+use crate::nodes::{AssetManifest, AudioTiming, SectionAssets};
 use crate::state_keys;
 use crate::storage::S3Client;
 
@@ -93,6 +93,34 @@ impl VideoAssemblerLogic {
     /// Upload a local file to S3
     async fn upload_to_s3(&self, local_path: &str, s3_path: &str) -> Result<(), String> {
         self.s3_client.upload_file(local_path, s3_path, "video/mp4").await
+    }
+
+    /// Run the Python bridge and parse output
+    async fn run_bridge(&self, input: &BridgeInput) -> Result<BridgeOutput, String> {
+        let input_json = serde_json::to_string(input).map_err(|e| e.to_string())?;
+        
+        let mut child = Command::new("python3")
+            .arg(&self.config.bridge_script_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn Python: {}", e))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(input_json.as_bytes()).await.map_err(|e| e.to_string())?;
+            std::mem::drop(stdin);
+        }
+
+        let output = child.wait_with_output().await.map_err(|e| e.to_string())?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        
+        if !output.status.success() {
+            return Err(format!("Python bridge failed: {}", stdout));
+        }
+
+        serde_json::from_str(&stdout).map_err(|e| format!("Failed to parse output: {}", e))
     }
 }
 
@@ -184,7 +212,10 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
         };
 
         // Call Python bridge for main video
-        let main_result = self.run_bridge(&bridge_input).await?;
+        let main_result = match self.run_bridge(&bridge_input).await {
+            Ok(result) => result,
+            Err(e) => return serde_json::json!({ "error": format!("Python bridge failed: {}", e) }),
+        };
         
         // Upload final video to S3
         let s3_video_path = format!("videos/{}/{}.mp4", video_id, video_id);
@@ -244,33 +275,6 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
         })
     }
 
-    /// Run the Python bridge and parse output
-    async fn run_bridge(&self, input: &BridgeInput) -> Result<BridgeOutput, String> {
-        let input_json = serde_json::to_string(input).map_err(|e| e.to_string())?;
-        
-        let mut child = Command::new("python3")
-            .arg(&self.config.bridge_script_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| format!("Failed to spawn Python: {}", e))?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            stdin.write_all(input_json.as_bytes()).await.map_err(|e| e.to_string())?;
-            std::mem::drop(stdin);
-        }
-
-        let output = child.wait_with_output().await.map_err(|e| e.to_string())?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        
-        if !output.status.success() {
-            return Err(format!("Python bridge failed: {}", stdout));
-        }
-
-        serde_json::from_str(&stdout).map_err(|e| format!("Failed to parse output: {}", e))
-    }
 
     async fn post(
         &self,

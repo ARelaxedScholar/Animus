@@ -72,6 +72,7 @@ pub struct AddToQueueRequest {
 }
 
 /// API Client for the Animus daemon
+#[derive(Clone)]
 pub struct AnimusClient {
     client: Client,
     base_url: String,

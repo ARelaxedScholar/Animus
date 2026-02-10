@@ -30,6 +30,4 @@ CREATE TABLE comment_interactions (
 
 -- 3. Update videos table with production and recycling fields
 ALTER TABLE videos ADD COLUMN shorts_path TEXT;
-ALTER TABLE videos ADD COLUMN performance_score FLOAT4;
 ALTER TABLE videos ADD COLUMN production_metadata JSONB; -- Stores mood, SFX triggers, etc.
-ALTER TABLE videos ADD COLUMN performance_updated_at TIMESTAMPTZ;

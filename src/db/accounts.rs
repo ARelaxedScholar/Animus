@@ -16,7 +16,7 @@ pub struct YouTubeAccount {
 pub async fn get_account(pool: &PgPool, id: i32) -> Result<Option<YouTubeAccount>, sqlx::Error> {
     sqlx::query_as!(
         YouTubeAccount,
-        "SELECT id, name, niche, client_id, client_secret, refresh_token, channel_id, is_active FROM youtube_accounts WHERE id = $1",
+        "SELECT id, name, niche, client_id, client_secret, refresh_token, channel_id, is_active AS \"is_active!\" FROM youtube_accounts WHERE id = $1",
         id
     )
     .fetch_optional(pool)
@@ -26,7 +26,7 @@ pub async fn get_account(pool: &PgPool, id: i32) -> Result<Option<YouTubeAccount
 pub async fn get_account_by_name(pool: &PgPool, name: &str) -> Result<Option<YouTubeAccount>, sqlx::Error> {
     sqlx::query_as!(
         YouTubeAccount,
-        "SELECT id, name, niche, client_id, client_secret, refresh_token, channel_id, is_active FROM youtube_accounts WHERE name = $1",
+        "SELECT id, name, niche, client_id, client_secret, refresh_token, channel_id, is_active AS \"is_active!\" FROM youtube_accounts WHERE name = $1",
         name
     )
     .fetch_optional(pool)
@@ -36,7 +36,7 @@ pub async fn get_account_by_name(pool: &PgPool, name: &str) -> Result<Option<You
 pub async fn list_active_accounts(pool: &PgPool) -> Result<Vec<YouTubeAccount>, sqlx::Error> {
     sqlx::query_as!(
         YouTubeAccount,
-        "SELECT id, name, niche, client_id, client_secret, refresh_token, channel_id, is_active FROM youtube_accounts WHERE is_active = true"
+        "SELECT id, name, niche, client_id, client_secret, refresh_token, channel_id, is_active AS \"is_active!\" FROM youtube_accounts WHERE is_active = true"
     )
     .fetch_all(pool)
     .await

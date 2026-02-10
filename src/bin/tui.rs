@@ -14,8 +14,6 @@ use ratatui::prelude::*;
 use std::io;
 use std::time::Duration;
 
-use animus::tui::{App, AppAction, AnimusClient};
-use animus::tui::ui;
 use tokio::sync::mpsc;
 
 // Messages from background tasks back to the UI

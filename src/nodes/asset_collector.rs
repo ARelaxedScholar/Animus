@@ -304,6 +304,8 @@ Return JSON only:
             description: prompt.to_string(),
         })
     }
+    /// Search for videos on Pexels
+    async fn search_pexels_videos(&self, query: &str, per_page: u32) -> Result<Vec<PexelsVideo>, String> {
         // Clean up the query for better search results
         let cleaned_query = Self::clean_search_query(query);
         

@@ -14,6 +14,15 @@ dev-down:
 migrate:
     sqlx migrate run
 
+# Download TTS models (Piper)
+download-models:
+    @mkdir -p models
+    @echo "Downloading en_US-lessac-medium.onnx..."
+    curl -L https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx -o models/en_US-lessac-medium.onnx
+    @echo "Downloading en_US-lessac-medium.onnx.json..."
+    curl -L https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json -o models/en_US-lessac-medium.onnx.json
+    @echo "Models downloaded successfully."
+
 # Authenticate a new YouTube account
 auth-account name niche *args:
     cargo run --bin auth-helper -- --name "{{name}}" --niche "{{niche}}" {{args}}

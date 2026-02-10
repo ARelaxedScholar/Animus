@@ -25,6 +25,12 @@ pub struct PublisherConfig {
     pub default_category_id: String,
     /// Default privacy status
     pub default_privacy: String,
+    /// YouTube OAuth client ID
+    pub client_id: String,
+    /// YouTube OAuth client secret
+    pub client_secret: String,
+    /// YouTube OAuth refresh token
+    pub refresh_token: String,
 }
 
 impl Default for PublisherConfig {
@@ -33,6 +39,9 @@ impl Default for PublisherConfig {
             default_account_id: None,
             default_category_id: "27".to_string(), // Education
             default_privacy: "private".to_string(), // Start private for review
+            client_id: String::new(),
+            client_secret: String::new(),
+            refresh_token: String::new(),
         }
     }
 }

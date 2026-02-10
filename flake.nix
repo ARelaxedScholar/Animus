@@ -96,6 +96,11 @@
               pip install dspy-ai
             fi
 
+            # Check for Piper models
+            if [ ! -f "models/en_US-lessac-medium.onnx" ]; then
+              echo "⚠️  Piper models missing. Run 'just download-models' to fetch them."
+            fi
+
             echo "Commands:"
             echo "   cargo build    - Build the project"
             echo "   cargo run      - Run the daemon"

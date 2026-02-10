@@ -54,6 +54,8 @@ pub struct Video {
     pub thumbnail_path: Option<String>,
     pub youtube_id: Option<String>,
     pub youtube_url: Option<String>,
+    #[sqlx(skip)]
+    pub youtube_account_id: Option<i32>,
     pub scheduled_at: Option<DateTime<Utc>>,
     pub published_at: Option<DateTime<Utc>>,
     pub error_message: Option<String>,
@@ -87,6 +89,7 @@ impl Video {
             thumbnail_path: None,
             youtube_id: None,
             youtube_url: None,
+            youtube_account_id: None,
             scheduled_at,
             published_at: None,
             error_message: None,

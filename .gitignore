@@ -31,7 +31,8 @@ tokens.json
 credentials.json
 client_secret.json
 training_data.jsonl
-models/dspy/
+models/*.onnx
+models/*.onnx.json
 outputs/
 *.mp4
 *.wav
