@@ -1,6 +1,6 @@
 //! Database queries for video persistence
 
-use super::models::{Video, VideoStatus};
+use super::models::{Video, VideoStatus, ScriptRecord};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -580,4 +580,146 @@ pub async fn get_training_data(
             }
         })
         .collect())
+}
+
+// =============================================================================
+// Script Repository Queries
+// =============================================================================
+
+/// Insert a new script into the repository
+pub async fn insert_script(
+    pool: &PgPool,
+    video_id: Option<Uuid>,
+    content: serde_json::Value,
+    topic: String,
+    quality_score: Option<f32>,
+) -> Result<i32, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"
+        INSERT INTO scripts (video_id, content, topic, word_count, quality_score, content_hash)
+        VALUES (
+            $1,
+            $2,
+            $3,
+            calculate_script_word_count($2),
+            $4,
+            encode(sha256(convert_to($2->>'full_text', 'UTF8')), 'hex')
+        )
+        ON CONFLICT (content_hash) DO UPDATE SET updated_at = NOW()
+        RETURNING id
+        "#,
+        video_id,
+        content,
+        topic,
+        quality_score
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row.id)
+}
+
+/// Get a script by ID
+pub async fn get_script_by_id(pool: &PgPool, id: i32) -> Result<Option<ScriptRecord>, sqlx::Error> {
+    sqlx::query_as::<_, ScriptRecord>("SELECT * FROM scripts WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+}
+
+/// List scripts with optional filters
+pub async fn list_scripts(
+    pool: &PgPool,
+    video_id: Option<Uuid>,
+    topic_filter: Option<&str>,
+    min_quality: Option<f32>,
+    min_word_count: Option<i32>,
+    max_word_count: Option<i32>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<ScriptRecord>, sqlx::Error> {
+    let mut query = "SELECT * FROM scripts WHERE 1=1".to_string();
+    let mut params: Vec<String> = Vec::new();
+    let mut param_count = 0;
+
+    if let Some(vid) = video_id {
+        param_count += 1;
+        query.push_str(&format!(" AND video_id = ${}", param_count));
+        params.push(vid.to_string());
+    }
+
+    if let Some(topic) = topic_filter {
+        param_count += 1;
+        query.push_str(&format!(" AND topic ILIKE ${}", param_count));
+        params.push(format!("%{}%", topic));
+    }
+
+    if let Some(min_q) = min_quality {
+        param_count += 1;
+        query.push_str(&format!(" AND quality_score >= ${}", param_count));
+        params.push(min_q.to_string());
+    }
+
+    if let Some(min_wc) = min_word_count {
+        param_count += 1;
+        query.push_str(&format!(" AND word_count >= ${}", param_count));
+        params.push(min_wc.to_string());
+    }
+
+    if let Some(max_wc) = max_word_count {
+        param_count += 1;
+        query.push_str(&format!(" AND word_count <= ${}", param_count));
+        params.push(max_wc.to_string());
+    }
+
+    query.push_str(&format!(" ORDER BY created_at DESC LIMIT ${} OFFSET ${}", param_count + 1, param_count + 2));
+    params.push(limit.to_string());
+    params.push(offset.to_string());
+
+    let mut query_builder = sqlx::query_as::<_, ScriptRecord>(&query);
+    for param in params {
+        query_builder = query_builder.bind(param);
+    }
+
+    query_builder.fetch_all(pool).await
+}
+
+/// Update script export formats
+pub async fn update_script_formats(
+    pool: &PgPool,
+    id: i32,
+    formats: &[String],
+) -> Result<(), sqlx::Error> {
+    sqlx::query!("UPDATE scripts SET exported_formats = $1 WHERE id = $2", formats, id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Delete a script by ID
+pub async fn delete_script(pool: &PgPool, id: i32) -> Result<bool, sqlx::Error> {
+    let result: sqlx::postgres::PgQueryResult = sqlx::query!("DELETE FROM scripts WHERE id = $1", id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Search scripts by content text
+pub async fn search_scripts(
+    pool: &PgPool,
+    query_text: &str,
+    limit: i64,
+) -> Result<Vec<ScriptRecord>, sqlx::Error> {
+    sqlx::query_as::<_, ScriptRecord>(
+        r#"
+        SELECT * FROM scripts 
+        WHERE content->>'full_text' ILIKE $1
+           OR topic ILIKE $1
+        ORDER BY created_at DESC 
+        LIMIT $2
+        "#,
+    )
+    .bind(format!("%{}%", query_text))
+    .bind(limit)
+    .fetch_all(pool)
+    .await
 }

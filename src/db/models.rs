@@ -31,16 +31,19 @@ impl FromStr for VideoStatus {
     }
 }
 
-impl VideoStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Scheduled => "scheduled",
-            Self::Producing => "producing",
-            Self::ReadyForReview => "readyforreview",
-            Self::Published => "published",
-            Self::Failed => "failed",
-        }
-    }
+/// Script record in the database
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ScriptRecord {
+    pub id: i32,
+    pub video_id: Option<Uuid>,
+    pub content: serde_json::Value,
+    pub topic: String,
+    pub word_count: i32,
+    pub quality_score: Option<f32>,
+    pub content_hash: String,
+    pub exported_formats: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Video record in the database
@@ -101,6 +104,18 @@ impl Video {
             failed_at_stage: None,
             created_at: now,
             updated_at: now,
+        }
+    }
+}
+
+impl VideoStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Scheduled => "scheduled",
+            Self::Producing => "producing",
+            Self::ReadyForReview => "readyforreview",
+            Self::Published => "published",
+            Self::Failed => "failed",
         }
     }
 }

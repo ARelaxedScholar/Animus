@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO scripts (video_id, content, topic, word_count, quality_score, content_hash)\n        VALUES (\n            $1,\n            $2,\n            $3,\n            calculate_script_word_count($2),\n            $4,\n            encode(sha256(convert_to($2->>'full_text', 'UTF8')), 'hex')\n        )\n        ON CONFLICT (content_hash) DO UPDATE SET updated_at = NOW()\n        RETURNING id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb",
+        "Text",
+        "Float4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "416b4b5e14e2e4bbd84d5369fc71a0aa1ac599ede86728a6aa1ee8b79466426e"
+}

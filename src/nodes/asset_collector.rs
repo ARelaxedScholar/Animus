@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use orichalcum::{AsyncNodeLogic, NodeValue};
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
+use sha2::{Sha256, Digest};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,6 +34,14 @@ pub struct AssetCollectorConfig {
     pub sd_api_key: Option<String>,
     /// Minimum clips per section
     pub min_clips_per_section: u32,
+    /// Maximum retry attempts for downloading videos
+    pub max_retries: u32,
+    /// Minimum file size in KB to consider video valid
+    pub min_file_size_kb: u64,
+    /// Whether to validate videos with ffprobe (if available)
+    pub validate_with_ffprobe: bool,
+    /// Whether to fallback to AI images when videos fail
+    pub fallback_to_images: bool,
 }
 
 impl Default for AssetCollectorConfig {
@@ -44,6 +53,10 @@ impl Default for AssetCollectorConfig {
             sd_api_url: None,
             sd_api_key: None,
             min_clips_per_section: 3,
+            max_retries: 3,
+            min_file_size_kb: 100,
+            validate_with_ffprobe: true,
+            fallback_to_images: true,
         }
     }
 }
@@ -121,6 +134,60 @@ impl AssetCollectorLogic {
             s3_client,
             db_pool,
         }
+    }
+
+    /// Download video with retry logic and exponential backoff
+    async fn download_with_retry(&self, url: &str, max_retries: u32) -> Result<Vec<u8>, String> {
+        let mut last_error = None;
+        for attempt in 0..max_retries {
+            info!("AssetCollector: Download attempt {}/{} for {}", attempt + 1, max_retries, url);
+            match self.http_client.get(url).send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        match response.bytes().await {
+                            Ok(bytes) => {
+                                info!("AssetCollector: Download successful on attempt {}", attempt + 1);
+                                return Ok(bytes.to_vec());
+                            },
+                            Err(e) => {
+                                last_error = Some(format!("Failed to read bytes: {}", e));
+                                warn!("AssetCollector: Failed to read bytes on attempt {}: {}", attempt + 1, e);
+                            },
+                        }
+                    } else {
+                        last_error = Some(format!("HTTP status: {}", response.status()));
+                        warn!("AssetCollector: HTTP error on attempt {}: {}", attempt + 1, response.status());
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(format!("Request failed: {}", e));
+                    warn!("AssetCollector: Request failed on attempt {}: {}", attempt + 1, e);
+                },
+            }
+            
+            if attempt < max_retries - 1 {
+                let delay = std::time::Duration::from_secs(2u64.pow(attempt));
+                info!("AssetCollector: Retrying after {} seconds...", delay.as_secs());
+                tokio::time::sleep(delay).await;
+            }
+        }
+        error!("AssetCollector: All {} download attempts failed for {}", max_retries, url);
+        Err(last_error.unwrap_or("Unknown error".to_string()))
+    }
+
+    /// Validate video bytes: check minimum size and compute hash for integrity
+    fn validate_video_bytes(&self, bytes: &[u8], min_size_kb: u64) -> Result<String, String> {
+        let size_kb = bytes.len() as u64 / 1024;
+        if size_kb < min_size_kb {
+            return Err(format!("File too small: {}KB < {}KB", size_kb, min_size_kb));
+        }
+        
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let hash = format!("{:x}", hasher.finalize());
+        
+        info!("AssetCollector: Video validation passed - size: {}KB, hash: {}", size_kb, hash);
+        Ok(hash)
     }
 
     /// Clean up a visual suggestion to make it a better search query for Pexels
@@ -381,27 +448,16 @@ Return JSON only:
             video.id, video_file.width.unwrap_or(0), video_file.height.unwrap_or(0)
         );
 
-        // Download the video
+        // Download the video with retry logic
         let link = video_file.link.as_ref().ok_or("Video file has no link")?;
-        let response = self.http_client
-            .get(link)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to start download: {}", e))?;
-        
-        if !response.status().is_success() {
-            return Err(format!("Download failed with status: {}", response.status()));
-        }
+        let video_bytes = self.download_with_retry(link, self.config.max_retries).await?;
 
-        // Log content length if available
-        if let Some(content_length) = response.content_length() {
-            info!("AssetCollector: Video size: {:.2} MB", content_length as f64 / 1024.0 / 1024.0);
-        }
-        
-        // Download the video
-        let video_bytes = response.bytes()
-            .await
-            .map_err(|e| format!("Failed to read video bytes: {}", e))?;
+        // Validate video file integrity
+        self.validate_video_bytes(&video_bytes, self.config.min_file_size_kb)
+            .map_err(|e| format!("Video validation failed: {}", e))?;
+
+        info!("AssetCollector: Video downloaded and validated - size: {:.2} MB", 
+              video_bytes.len() as f64 / 1024.0 / 1024.0);
 
         // Upload to S3
         let key = format!(
@@ -445,6 +501,9 @@ impl AsyncNodeLogic for AssetCollectorLogic {
             Some(s) => s,
             None => return serde_json::json!({ "error": "No script provided" }),
         };
+
+        info!("AssetCollector: Starting with validation settings - max_retries: {}, min_file_size_kb: {}, validate_with_ffprobe: {}, fallback_to_images: {}",
+              self.config.max_retries, self.config.min_file_size_kb, self.config.validate_with_ffprobe, self.config.fallback_to_images);
 
         // CHECK FOR RESUME
         if let Some(existing) = input.get("existing_manifest").and_then(|v| serde_json::from_value::<AssetManifest>(v.clone()).ok()) {
@@ -520,11 +579,13 @@ impl AsyncNodeLogic for AssetCollectorLogic {
             }
 
             // Step 3: AI Image fallback if clips are sparse
-            if video_clips.is_empty() || video_clips.len() < 2 {
+            if (video_clips.is_empty() || video_clips.len() < 2) && self.config.fallback_to_images {
                 match self.generate_leonardo_image(&intent.ai_image_prompt, &video_id, section_idx).await {
                     Ok(img) => images.push(img),
                     Err(e) => warn!("AI image generation failed: {}", e),
                 }
+            } else if video_clips.is_empty() || video_clips.len() < 2 {
+                warn!("AssetCollector: Video clips sparse but fallback to images is disabled for section {}", section_idx);
             }
             
             info!(

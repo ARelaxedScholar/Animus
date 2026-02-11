@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MoviePy Bridge for Animus - Studio Production Version 5
+MoviePy Bridge for Animus - Studio Production Version 5.1
 
 New Features:
 1. Multi-track Audio Mixing (Voice, Music, SFX)
@@ -8,6 +8,8 @@ New Features:
 3. Ken Burns Effect for static images
 4. Vertical Shorts Mode (9:16 crop + Standard Captions)
 5. Atmospheric SFX Layering
+6. Enhanced error handling and diagnostics
+7. File validation and graceful degradation
 """
 
 import json
@@ -16,6 +18,10 @@ import os
 import gc
 import subprocess
 import random
+import platform
+import traceback
+import resource
+import signal
 from typing import Optional, List, Tuple
 
 try:
@@ -114,24 +120,52 @@ def create_section_video(
     loaded_clips = [] # Keep track for explicit closing
     
     # Load Video Clips
+    valid_clips_count = 0
     for clip_info in video_clips_info:
         path = clip_info.get("path")
-        if path and os.path.exists(path):
-            try:
-                clip = VideoFileClip(path, audio=False)
-                # Resize and crop to fill
-                if MOVIEPY_V2:
-                    clip = clip.resized(height=height)
-                    if clip.w < width: clip = clip.resized(width=width)
-                    clip = clip.cropped(x_center=clip.w/2, y_center=clip.h/2, width=width, height=height)
-                else:
-                    clip = clip.resize(height=height)
-                    if clip.w < width: clip = clip.resize(width=width)
-                    clip = clip.crop(x_center=clip.w/2, y_center=clip.h/2, width=width, height=height)
-                all_visuals.append(clip)
-                loaded_clips.append(clip)
-            except Exception as e:
-                print(f"Error loading clip {path}: {e}", file=sys.stderr)
+        if not path or not os.path.exists(path):
+            print(f"Warning: Clip path missing or does not exist: {path}", file=sys.stderr)
+            continue
+        
+        # Validate video before loading
+        valid, validation_msg = validate_video_file(path, min_size_kb=100)
+        if not valid:
+            print(f"Warning: Skipping invalid video clip {path}: {validation_msg}", file=sys.stderr)
+            continue
+        
+        clip = None
+        try:
+            clip = VideoFileClip(path, audio=False)
+            # Resize and crop to fill
+            if MOVIEPY_V2:
+                clip = clip.resized(height=height)
+                if clip.w < width: clip = clip.resized(width=width)
+                clip = clip.cropped(x_center=clip.w/2, y_center=clip.h/2, width=width, height=height)
+            else:
+                clip = clip.resize(height=height)
+                if clip.w < width: clip = clip.resize(width=width)
+                clip = clip.crop(x_center=clip.w/2, y_center=clip.h/2, width=width, height=height)
+            
+            # Check if clip has valid duration
+            if clip.duration <= 0:
+                print(f"Warning: Clip has zero/negative duration: {path}", file=sys.stderr)
+                clip.close()
+                continue
+                
+            all_visuals.append(clip)
+            loaded_clips.append(clip)
+            valid_clips_count += 1
+        except Exception as e:
+            print(f"Error loading clip {path}: {e}", file=sys.stderr)
+            # Try to close the clip if it was partially loaded
+            if clip is not None:
+                try:
+                    clip.close()
+                except:
+                    pass
+    
+    # Log clip loading summary
+    print(f"Section {section_index}: Loaded {valid_clips_count}/{len(video_clips_info)} video clips", file=sys.stderr)
 
     # Load Images and apply Ken Burns
     for img_info in images_info:
@@ -245,6 +279,8 @@ def assemble_production(config: dict) -> dict:
     num_sections = len(section_assets_list)
     
     section_files = []
+    failed_sections = []
+    
     for i in range(num_sections):
         # Determine duration
         if i < len(section_timings):
@@ -254,8 +290,36 @@ def assemble_production(config: dict) -> dict:
             dur = total_duration / num_sections
         
         assets = section_assets_list[i]
-        path = create_section_video(assets, dur, width, height, i, temp_dir, is_short)
-        section_files.append(path)
+        try:
+            path = create_section_video(assets, dur, width, height, i, temp_dir, is_short)
+            # Validate section was created
+            if os.path.exists(path) and os.path.getsize(path) > 1024:
+                section_files.append(path)
+            else:
+                print(f"Warning: Section {i} video file invalid or empty, using fallback", file=sys.stderr)
+                failed_sections.append(i)
+        except Exception as e:
+            print(f"Error creating section {i}: {e}", file=sys.stderr)
+            failed_sections.append(i)
+    
+    # Create fallback sections for failed ones
+    for i in failed_sections:
+        try:
+            fallback_path = os.path.join(temp_dir, f"fallback_section_{i}.mp4")
+            # Create a simple color clip as fallback
+            if MOVIEPY_V2:
+                fallback = ColorClip(size=(width, height), color=(30, 30, 30), duration=dur)
+                fallback = fallback.with_duration(dur)
+                fallback.write_videofile(fallback_path, fps=DEFAULT_FPS, codec="libx264", audio=False, preset="ultrafast")
+            else:
+                fallback = ColorClip(size=(width, height), color=(30, 30, 30), duration=dur)
+                fallback.write_videofile(fallback_path, fps=DEFAULT_FPS, codec="libx264", audio=False, verbose=False, logger=None, preset="ultrafast")
+            section_files.insert(i, fallback_path)
+        except Exception as e:
+            print(f"Failed to create fallback for section {i}: {e}", file=sys.stderr)
+    
+    if not section_files:
+        raise RuntimeError("No sections could be created")
 
     # 3. Build Full Video Timeline
     video_full = concatenate_videoclips([VideoFileClip(f) for f in section_files])
@@ -306,17 +370,188 @@ def assemble_production(config: dict) -> dict:
     }
 
 
+def setup_memory_limits():
+    """Set memory limits to prevent OOM kills."""
+    try:
+        # 2GB memory limit (bytes)
+        memory_limit_bytes = 2 * 1024 * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (memory_limit_bytes, memory_limit_bytes))
+    except (ValueError, resource.error):
+        pass  # Not supported on this system
+
+def setup_timeout_handler(timeout_seconds=300):
+    """Set up timeout handler for long-running operations."""
+    def timeout_handler(signum, frame):
+        raise TimeoutError(f"Operation timed out after {timeout_seconds} seconds")
+    
+    try:
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(timeout_seconds)
+    except (AttributeError, ValueError):
+        pass  # Signals not available on Windows
+
+def validate_video_file(path: str, min_size_kb: int = 100) -> tuple[bool, str]:
+    """Validate a video file for basic integrity."""
+    if not os.path.exists(path):
+        return False, f"File does not exist: {path}"
+    
+    # Check file size
+    try:
+        size_bytes = os.path.getsize(path)
+        if size_bytes < min_size_kb * 1024:
+            return False, f"File too small: {size_bytes} bytes < {min_size_kb}KB"
+        
+        # Check for MP4 magic bytes (ftyp)
+        with open(path, 'rb') as f:
+            header = f.read(12)
+            if len(header) >= 8:
+                # MP4 files start with ftyp atom at offset 4
+                if header[4:8] not in [b'ftyp', b'free', b'mdat', b'moov']:
+                    return False, f"Invalid MP4 header: {header[4:8].hex()}"
+    except Exception as e:
+        return False, f"File validation error: {e}"
+    
+    return True, ""
+
+def validate_input_files(config: dict) -> List[str]:
+    """Validate all input files exist and are accessible."""
+    errors = []
+    
+    # Check audio file
+    audio_path = config.get("audio_path")
+    if not audio_path or not os.path.exists(audio_path):
+        errors.append(f"Audio file not found: {audio_path}")
+    elif os.path.getsize(audio_path) < 1024:  # 1KB minimum
+        errors.append(f"Audio file too small: {audio_path}")
+    
+    # Check asset files
+    asset_manifest = config.get("asset_manifest", {})
+    section_assets_list = asset_manifest.get("section_assets", [])
+    
+    for i, section in enumerate(section_assets_list):
+        for clip in section.get("video_clips", []):
+            path = clip.get("path")
+            if not path:
+                continue
+            if not os.path.exists(path):
+                errors.append(f"Video clip not found (section {i}): {path}")
+            else:
+                valid, msg = validate_video_file(path, min_size_kb=100)
+                if not valid:
+                    errors.append(f"Video clip invalid (section {i}): {path} - {msg}")
+        
+        for img in section.get("images", []):
+            path = img.get("path")
+            if path and not os.path.exists(path):
+                errors.append(f"Image not found (section {i}): {path}")
+            elif path and os.path.getsize(path) < 1024:
+                errors.append(f"Image file too small (section {i}): {path}")
+    
+    return errors
+
+def get_system_info() -> dict:
+    """Get system information for diagnostics."""
+    try:
+        import moviepy
+        moviepy_version = getattr(moviepy, "__version__", "unknown")
+    except ImportError:
+        moviepy_version = "not_imported"
+    
+    memory_info = "unknown"
+    if psutil is not None:
+        try:
+            memory_info = f"{psutil.virtual_memory().total / (1024**3):.1f} GB"
+        except:
+            memory_info = "error"
+    
+    return {
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "moviepy_version": moviepy_version,
+        "moviepy_v2": MOVIEPY_V2,
+        "cpus": os.cpu_count(),
+        "memory": memory_info
+    }
+
 def main():
+    # Install global exception handler
+    def global_exception_handler(exc_type, exc_value, exc_traceback):
+        print(json.dumps({
+            "success": False,
+            "error": f"Unhandled exception: {exc_type.__name__}: {exc_value}",
+            "trace": ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+            "system_info": get_system_info() if 'get_system_info' in globals() else {}
+        }))
+        sys.exit(1)
+    
+    sys.excepthook = global_exception_handler
+    
+    # Set up resource limits
+    setup_memory_limits()
+    setup_timeout_handler(300)  # 5 minute timeout
+    
+    try:
+        # Import psutil for memory info (optional)
+        global psutil
+        import psutil
+    except ImportError:
+        psutil = None
+    
     input_data = sys.stdin.read()
-    if not input_data: sys.exit(1)
-    config = json.loads(input_data)
+    if not input_data:
+        print(json.dumps({
+            "success": False, 
+            "error": "No input data provided",
+            "system_info": get_system_info() if 'get_system_info' in globals() else {}
+        }))
+        sys.exit(1)
+    
+    try:
+        config = json.loads(input_data)
+    except json.JSONDecodeError as e:
+        print(json.dumps({
+            "success": False,
+            "error": f"Invalid JSON input: {e}",
+            "input_preview": input_data[:500] if len(input_data) > 500 else input_data
+        }))
+        sys.exit(1)
+    
+    # Validate input files
+    file_errors = validate_input_files(config)
+    if file_errors:
+        print(json.dumps({
+            "success": False,
+            "error": f"File validation failed: {file_errors}",
+            "file_errors": file_errors,
+            "system_info": get_system_info() if 'get_system_info' in globals() else {}
+        }))
+        sys.exit(1)
     
     try:
         result = assemble_production(config)
+        result["system_info"] = get_system_info() if 'get_system_info' in globals() else {}
         print(json.dumps(result))
+    except TimeoutError as e:
+        print(json.dumps({
+            "success": False,
+            "error": str(e),
+            "system_info": get_system_info() if 'get_system_info' in globals() else {}
+        }))
+        sys.exit(1)
     except Exception as e:
-        import traceback
-        print(json.dumps({"success": False, "error": str(e), "trace": traceback.format_exc()}))
+        print(json.dumps({
+            "success": False, 
+            "error": str(e), 
+            "trace": traceback.format_exc(),
+            "system_info": get_system_info() if 'get_system_info' in globals() else {}
+        }))
+        sys.exit(1)
+    finally:
+        # Disable timeout alarm
+        try:
+            signal.alarm(0)
+        except (AttributeError, ValueError):
+            pass
 
 if __name__ == "__main__":
     main()

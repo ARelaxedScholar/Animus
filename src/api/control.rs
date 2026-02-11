@@ -14,9 +14,10 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use std::str::FromStr;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use crate::api::auth::auth_middleware;
-use crate::db::{self, Video, VideoStatus};
+use crate::db::{self, Video, VideoStatus, ScriptRecord};
 use crate::storage::S3Client;
 
 /// Daemon state exposed to the API
@@ -98,6 +99,13 @@ pub fn create_router(state: AppState) -> Router {
         .route("/queue", post(add_to_queue))
         .route("/queue/:id", delete(remove_from_queue))
         .route("/queue/clear", post(clear_queue))
+        // Script repository
+        .route("/scripts", get(list_scripts))
+        .route("/scripts", post(create_script))
+        .route("/scripts/search", get(search_scripts))
+        .route("/scripts/:id", get(get_script))
+        .route("/scripts/:id", delete(delete_script))
+        .route("/scripts/:id/export", get(export_script))
         // Legacy endpoints
         .route("/manual/script", post(upload_manual_script))
         .route("/manual/seed", post(queue_manual_seed))
@@ -120,13 +128,59 @@ async fn get_status(
 
 /// Upload a manual script directly to the processing folder
 async fn upload_manual_script(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(script): Json<serde_json::Value>,
 ) -> (StatusCode, Json<ApiResponse<String>>) {
+    // 1. Save to file as backup
     let path = format!("manual_scripts/api_upload_{}.json", uuid::Uuid::new_v4());
-    match tokio::fs::write(&path, serde_json::to_string_pretty(&script).unwrap()).await {
-        Ok(_) => (StatusCode::OK, Json(ApiResponse::ok(format!("Script uploaded to {}", path)))),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(format!("Failed to write script: {}", e)))),
+    let file_result = tokio::fs::write(&path, serde_json::to_string_pretty(&script).unwrap()).await;
+    
+    // 2. Extract topic from script content
+    let topic = if let Some(sections) = script.get("sections").and_then(|s| s.as_array()) {
+        if !sections.is_empty() {
+            sections[0]
+                .get("title")
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "manual_upload".to_string())
+        } else {
+            script
+                .get("hook")
+                .and_then(|h| h.get("title"))
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "manual_upload".to_string())
+        }
+    } else {
+        script
+            .get("hook")
+            .and_then(|h| h.get("title"))
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "manual_upload".to_string())
+    };
+    
+    // 3. Save to script repository
+    let repo_result = db::insert_script(&state.db_pool, None, script.clone(), topic, None).await;
+    
+    // 4. Combine results
+    match (file_result, repo_result) {
+        (Ok(_), Ok(script_id)) => (
+            StatusCode::OK,
+            Json(ApiResponse::ok(format!("Script uploaded to {} and saved to repository (ID: {})", path, script_id))),
+        ),
+        (Ok(_), Err(e)) => (
+            StatusCode::PARTIAL_CONTENT,
+            Json(ApiResponse::err(format!("Script saved to {} but repository save failed: {}", path, e))),
+        ),
+        (Err(e), Ok(script_id)) => (
+            StatusCode::PARTIAL_CONTENT,
+            Json(ApiResponse::err(format!("Script saved to repository (ID: {}) but file save failed: {}", script_id, e))),
+        ),
+        (Err(e1), Err(e2)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::err(format!("Both file and repository save failed: file: {}, repo: {}", e1, e2))),
+        ),
     }
 }
 
@@ -534,6 +588,365 @@ async fn clear_queue(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse::err(format!("Database error: {}", e))),
         ),
+    }
+}
+
+// =============================================================================
+// Script Repository Endpoints
+// =============================================================================
+
+/// Query parameters for listing scripts
+#[derive(Debug, Deserialize)]
+pub struct ListScriptsQuery {
+    pub video_id: Option<String>,
+    pub topic: Option<String>,
+    pub min_quality: Option<f32>,
+    pub min_words: Option<i32>,
+    pub max_words: Option<i32>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// Search parameters for scripts
+#[derive(Debug, Deserialize)]
+pub struct SearchScriptsQuery {
+    pub q: String,
+    pub limit: Option<i64>,
+}
+
+/// Create script request
+#[derive(Debug, Deserialize)]
+pub struct CreateScriptRequest {
+    pub video_id: Option<String>,
+    pub content: serde_json::Value,
+    pub topic: String,
+    pub quality_score: Option<f32>,
+}
+
+/// Export format parameter
+#[derive(Debug, Deserialize)]
+pub struct ExportScriptQuery {
+    pub format: Option<String>, // "json", "markdown", "text"
+}
+
+/// Script summary for list view
+#[derive(Debug, Serialize)]
+pub struct ScriptSummary {
+    pub id: i32,
+    pub video_id: Option<String>,
+    pub topic: String,
+    pub word_count: i32,
+    pub quality_score: Option<f32>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub exported_formats: Vec<String>,
+}
+
+impl From<ScriptRecord> for ScriptSummary {
+    fn from(record: ScriptRecord) -> Self {
+        Self {
+            id: record.id,
+            video_id: record.video_id.map(|id| id.to_string()),
+            topic: record.topic,
+            word_count: record.word_count,
+            quality_score: record.quality_score,
+            created_at: record.created_at.to_rfc3339(),
+            updated_at: record.updated_at.to_rfc3339(),
+            exported_formats: record.exported_formats,
+        }
+    }
+}
+
+/// Script details for single view
+#[derive(Debug, Serialize)]
+pub struct ScriptDetails {
+    pub id: i32,
+    pub video_id: Option<String>,
+    pub content: serde_json::Value,
+    pub topic: String,
+    pub word_count: i32,
+    pub quality_score: Option<f32>,
+    pub content_hash: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub exported_formats: Vec<String>,
+}
+
+impl From<ScriptRecord> for ScriptDetails {
+    fn from(record: ScriptRecord) -> Self {
+        Self {
+            id: record.id,
+            video_id: record.video_id.map(|id| id.to_string()),
+            content: record.content,
+            topic: record.topic,
+            word_count: record.word_count,
+            quality_score: record.quality_score,
+            content_hash: record.content_hash,
+            created_at: record.created_at.to_rfc3339(),
+            updated_at: record.updated_at.to_rfc3339(),
+            exported_formats: record.exported_formats,
+        }
+    }
+}
+
+/// List scripts with optional filters
+async fn list_scripts(
+    State(state): State<AppState>,
+    Query(params): Query<ListScriptsQuery>,
+) -> (StatusCode, Json<ApiResponse<Vec<ScriptSummary>>>) {
+    let video_id = match params.video_id {
+        Some(id_str) => match Uuid::parse_str(&id_str) {
+            Ok(id) => Some(id),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiResponse::err("Invalid video_id format")),
+                )
+            }
+        },
+        None => None,
+    };
+
+    let limit = params.limit.unwrap_or(50);
+    let offset = params.offset.unwrap_or(0);
+
+    match db::list_scripts(
+        &state.db_pool,
+        video_id,
+        params.topic.as_deref(),
+        params.min_quality,
+        params.min_words,
+        params.max_words,
+        limit,
+        offset,
+    )
+    .await
+    {
+        Ok(scripts) => {
+            let summaries: Vec<ScriptSummary> =
+                scripts.into_iter().map(|s| ScriptSummary::from(s)).collect();
+            (StatusCode::OK, Json(ApiResponse::ok(summaries)))
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::err(format!("Database error: {}", e))),
+        ),
+    }
+}
+
+/// Search scripts by content or topic
+async fn search_scripts(
+    State(state): State<AppState>,
+    Query(params): Query<SearchScriptsQuery>,
+) -> (StatusCode, Json<ApiResponse<Vec<ScriptSummary>>>) {
+    let limit = params.limit.unwrap_or(20);
+    
+    match db::search_scripts(&state.db_pool, &params.q, limit).await {
+        Ok(scripts) => {
+            let summaries: Vec<ScriptSummary> =
+                scripts.into_iter().map(|s| ScriptSummary::from(s)).collect();
+            (StatusCode::OK, Json(ApiResponse::ok(summaries)))
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::err(format!("Database error: {}", e))),
+        ),
+    }
+}
+
+/// Create or import a script
+async fn create_script(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateScriptRequest>,
+) -> (StatusCode, Json<ApiResponse<i32>>) {
+    let video_id = match payload.video_id {
+        Some(id_str) => match Uuid::parse_str(&id_str) {
+            Ok(id) => Some(id),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiResponse::err("Invalid video_id format")),
+                )
+            }
+        },
+        None => None,
+    };
+
+    match db::insert_script(
+        &state.db_pool,
+        video_id,
+        payload.content,
+        payload.topic,
+        payload.quality_score,
+    )
+    .await
+    {
+        Ok(id) => (StatusCode::CREATED, Json(ApiResponse::ok(id))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::err(format!("Failed to save script: {}", e))),
+        ),
+    }
+}
+
+/// Get script details by ID
+async fn get_script(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+) -> (StatusCode, Json<ApiResponse<ScriptDetails>>) {
+    match db::get_script_by_id(&state.db_pool, id).await {
+        Ok(Some(script)) => (StatusCode::OK, Json(ApiResponse::ok(ScriptDetails::from(script)))),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::err("Script not found")),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::err(format!("Database error: {}", e))),
+        ),
+    }
+}
+
+/// Delete a script by ID
+async fn delete_script(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+) -> (StatusCode, Json<ApiResponse<bool>>) {
+    match db::delete_script(&state.db_pool, id).await {
+        Ok(true) => (StatusCode::OK, Json(ApiResponse::ok(true))),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::err("Script not found")),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::err(format!("Database error: {}", e))),
+        ),
+    }
+}
+
+/// Export script in various formats
+async fn export_script(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    Query(params): Query<ExportScriptQuery>,
+) -> Response {
+    let format = params.format.as_deref().unwrap_or("json");
+    
+    match db::get_script_by_id(&state.db_pool, id).await {
+        Ok(Some(script)) => {
+            let formats_to_update = match format {
+                "json" => vec!["json".to_string()],
+                "markdown" => vec!["markdown".to_string()],
+                "text" => vec!["text".to_string()],
+                _ => vec!["json".to_string()],
+            };
+            
+            // Update exported formats in database (fire and forget)
+            let pool = state.db_pool.clone();
+            let script_id = script.id;
+            tokio::spawn(async move {
+                let _ = db::update_script_formats(&pool, script_id, &formats_to_update).await;
+            });
+            
+            // Create response based on format
+            match format {
+                "json" => {
+                    let json = serde_json::to_string_pretty(&script.content).unwrap_or_default();
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(
+                            header::CONTENT_DISPOSITION,
+                            format!("attachment; filename=\"script_{}.json\"", id),
+                        )
+                        .body(Body::from(json))
+                        .unwrap()
+                }
+                "markdown" => {
+                    let content = &script.content;
+                    let mut markdown = String::new();
+                    
+                    // Add title from first section or topic
+                    if let Some(topic) = content.get("topic").and_then(|t| t.as_str()) {
+                        markdown.push_str(&format!("# {}\n\n", topic));
+                    }
+                    
+                    // Add hook
+                    if let Some(hook) = content.get("hook") {
+                        if let Some(narration) = hook.get("narration").and_then(|n| n.as_str()) {
+                            markdown.push_str("## Hook\n\n");
+                            markdown.push_str(narration);
+                            markdown.push_str("\n\n");
+                        }
+                    }
+                    
+                    // Add sections
+                    if let Some(sections) = content.get("sections").and_then(|s| s.as_array()) {
+                        for (i, section) in sections.iter().enumerate() {
+                            if let Some(title) = section.get("title").and_then(|t| t.as_str()) {
+                                markdown.push_str(&format!("## {}\n\n", title));
+                            } else {
+                                markdown.push_str(&format!("## Section {}\n\n", i + 1));
+                            }
+                            
+                            if let Some(narration) = section.get("narration").and_then(|n| n.as_str()) {
+                                markdown.push_str(narration);
+                                markdown.push_str("\n\n");
+                            }
+                        }
+                    }
+                    
+                    // Add CTA
+                    if let Some(cta) = content.get("cta") {
+                        if let Some(narration) = cta.get("narration").and_then(|n| n.as_str()) {
+                            markdown.push_str("## Call to Action\n\n");
+                            markdown.push_str(narration);
+                            markdown.push_str("\n\n");
+                        }
+                    }
+                    
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "text/markdown")
+                        .header(
+                            header::CONTENT_DISPOSITION,
+                            format!("attachment; filename=\"script_{}.md\"", id),
+                        )
+                        .body(Body::from(markdown))
+                        .unwrap()
+                }
+                "text" => {
+                    let text = script.content
+                        .get("full_text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "text/plain")
+                        .header(
+                            header::CONTENT_DISPOSITION,
+                            format!("attachment; filename=\"script_{}.txt\"", id),
+                        )
+                        .body(Body::from(text))
+                        .unwrap()
+                }
+                _ => Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::from("Unsupported format. Use: json, markdown, text"))
+                    .unwrap(),
+            }
+        }
+        Ok(None) => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("Script not found"))
+            .unwrap(),
+        Err(_) => Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::from("Database error"))
+            .unwrap(),
     }
 }
 

@@ -112,6 +112,14 @@ pub struct AssetConfig {
     pub sd_api_url: Option<String>,
     pub sd_api_key: Option<String>,
     pub min_clips_per_section: u32,
+    /// Maximum retry attempts for downloading videos
+    pub max_retries: u32,
+    /// Minimum file size in KB to consider video valid
+    pub min_file_size_kb: u64,
+    /// Whether to validate videos with ffprobe (if available)
+    pub validate_with_ffprobe: bool,
+    /// Whether to fallback to AI images when videos fail
+    pub fallback_to_images: bool,
 }
 
 /// Script self-improvement loop configuration
@@ -247,6 +255,34 @@ impl Settings {
                 std::env::var("ASSET_MIN_CLIPS_PER_SECTION")
                     .ok()
                     .and_then(|v| v.parse::<i64>().ok()),
+            )?
+            .set_default("assets.max_retries", 3)?
+            .set_override_option(
+                "assets.max_retries",
+                std::env::var("ASSET_MAX_RETRIES")
+                    .ok()
+                    .and_then(|v| v.parse::<i64>().ok()),
+            )?
+            .set_default("assets.min_file_size_kb", 100)?
+            .set_override_option(
+                "assets.min_file_size_kb",
+                std::env::var("ASSET_MIN_FILE_SIZE_KB")
+                    .ok()
+                    .and_then(|v| v.parse::<i64>().ok()),
+            )?
+            .set_default("assets.validate_with_ffprobe", true)?
+            .set_override_option(
+                "assets.validate_with_ffprobe",
+                std::env::var("ASSET_VALIDATE_WITH_FFPROBE")
+                    .ok()
+                    .map(|v| v.to_lowercase() == "true" || v == "1"),
+            )?
+            .set_default("assets.fallback_to_images", true)?
+            .set_override_option(
+                "assets.fallback_to_images",
+                std::env::var("ASSET_FALLBACK_TO_IMAGES")
+                    .ok()
+                    .map(|v| v.to_lowercase() == "true" || v == "1"),
             )?
             // YouTube
             .set_default("youtube.client_id", "")?

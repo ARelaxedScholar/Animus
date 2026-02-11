@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
+
 use crate::config::ScriptImprovementConfig;
 use crate::db;
 use crate::nodes::{
@@ -658,6 +659,42 @@ IMPORTANT:
         }
     }
 
+    /// Save script to scripts repository for reuse and export
+    async fn save_to_scripts_repository(
+        &self,
+        video_id: uuid::Uuid,
+        script: &Script,
+        quality_score: Option<f32>,
+    ) {
+        let script_json = match serde_json::to_value(script) {
+            Ok(json) => json,
+            Err(e) => {
+                warn!("ScriptWriter: Failed to serialize script for repository: {}", e);
+                return;
+            }
+        };
+
+        // Extract topic from script sections or use video topic
+        let topic = if !script.sections.is_empty() {
+            script.sections[0].title.clone()
+        } else {
+            script.hook.title.clone()
+        };
+
+        match db::insert_script(
+            &self.db_pool,
+            Some(video_id),
+            script_json,
+            topic,
+            quality_score,
+        )
+        .await
+        {
+            Ok(id) => info!("ScriptWriter: Saved script {} to repository", id),
+            Err(e) => warn!("ScriptWriter: Failed to save script to repository: {}", e),
+        }
+    }
+
     /// Run the self-improvement loop
     async fn generate_with_improvement(&self, topic_brief: &TopicBrief) -> Result<Script, String> {
         let config = &self.improvement_config;
@@ -857,13 +894,31 @@ IMPORTANT:
             );
         }
 
+        // Save final script to repository for reuse and export
+        self.save_to_scripts_repository(
+            video_id,
+            &best.script,
+            Some(best.evaluation.overall_score),
+        ).await;
+
         Ok(best.script)
     }
 
     /// Simple single-shot generation (when improvement loop is disabled)
     async fn generate_single(&self, topic_brief: &TopicBrief) -> Result<Script, String> {
         info!("ScriptWriter: Single-shot generation (improvement loop disabled)");
-        self.generate_script(topic_brief).await
+        match self.generate_script(topic_brief).await {
+            Ok(script) => {
+                // Save script to repository (no quality score since not evaluated)
+                self.save_to_scripts_repository(
+                    topic_brief.video_id,
+                    &script,
+                    None,
+                ).await;
+                Ok(script)
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -892,6 +947,38 @@ impl AsyncNodeLogic for ScriptWriterLogic {
         // CASE 0: Bypass if manual script is provided
         if let Some(manual_script) = input.get("manual_script").filter(|v| !v.is_null()) {
             info!("ScriptWriter: Manual script detected, bypassing generation");
+            
+            // Try to parse and save to repository in background
+            if let (Some(_video_id_str), Ok(video_id)) = (
+                input.get("video_id").and_then(|v| v.as_str()),
+                input.get("video_id").and_then(|v| v.as_str()).map_or(Err("No video_id"), |s| uuid::Uuid::parse_str(s).map_err(|_| "Invalid video_id"))
+            ) {
+                if let Ok(script) = serde_json::from_value::<Script>(manual_script.clone()) {
+                    let pool = self.db_pool.clone();
+                    tokio::spawn(async move {
+                        // Save to scripts repository
+                        let script_json = match serde_json::to_value(&script) {
+                            Ok(json) => json,
+                            Err(e) => {
+                                warn!("ScriptWriter: Failed to serialize manual script: {}", e);
+                                return;
+                            }
+                        };
+                        
+                        let topic = if !script.sections.is_empty() {
+                            script.sections[0].title.clone()
+                        } else {
+                            script.hook.title.clone()
+                        };
+                        
+                        match db::insert_script(&pool, Some(video_id), script_json, topic, None).await {
+                            Ok(id) => info!("ScriptWriter: Saved manual script {} to repository", id),
+                            Err(e) => warn!("ScriptWriter: Failed to save manual script: {}", e),
+                        }
+                    });
+                }
+            }
+            
             return serde_json::json!({
                 "success": true,
                 "script": manual_script,
@@ -903,6 +990,32 @@ impl AsyncNodeLogic for ScriptWriterLogic {
         // CASE 1: Resume if script already exists
         if let Some(existing_script) = input.get("script").and_then(|v| serde_json::from_value::<Script>(v.clone()).ok()) {
             info!("ScriptWriter: Resuming with existing script for video {}", existing_script.video_id);
+            
+            // Save to repository in background (check for duplicates)
+            let pool = self.db_pool.clone();
+            let script = existing_script.clone();
+            let video_id = script.video_id;
+            tokio::spawn(async move {
+                let script_json = match serde_json::to_value(&script) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        warn!("ScriptWriter: Failed to serialize existing script: {}", e);
+                        return;
+                    }
+                };
+                
+                let topic = if !script.sections.is_empty() {
+                    script.sections[0].title.clone()
+                } else {
+                    script.hook.title.clone()
+                };
+                
+                match db::insert_script(&pool, Some(video_id), script_json, topic, None).await {
+                    Ok(id) => info!("ScriptWriter: Saved resumed script {} to repository", id),
+                    Err(e) => warn!("ScriptWriter: Failed to save resumed script: {}", e),
+                }
+            });
+            
             return serde_json::json!({
                 "success": true,
                 "script": serde_json::to_value(&existing_script).unwrap(),

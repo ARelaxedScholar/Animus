@@ -4,7 +4,7 @@ pub mod models;
 pub mod queries;
 pub mod accounts;
 
-pub use models::{Video, VideoStatus};
+pub use models::{Video, VideoStatus, ScriptRecord};
 pub use queries::*;
 pub use accounts::*;
 

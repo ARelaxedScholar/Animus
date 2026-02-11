@@ -75,6 +75,10 @@ impl VideoProductionFlow {
             sd_api_url: settings.assets.sd_api_url.clone(),
             sd_api_key: settings.assets.sd_api_key.clone(),
             min_clips_per_section: settings.assets.min_clips_per_section,
+            max_retries: settings.assets.max_retries,
+            min_file_size_kb: settings.assets.min_file_size_kb,
+            validate_with_ffprobe: settings.assets.validate_with_ffprobe,
+            fallback_to_images: settings.assets.fallback_to_images,
         };
         let video_assembler_config = VideoAssemblerConfig::default();
         let thumbnail_config = ThumbnailConfig::default();
