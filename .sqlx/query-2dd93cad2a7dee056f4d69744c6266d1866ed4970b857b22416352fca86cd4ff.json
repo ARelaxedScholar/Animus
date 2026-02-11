@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE videos SET status = 'failed', error_message = 'Stale production cleared at startup', failed_at_stage = 'unknown' WHERE status = 'producing'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "2dd93cad2a7dee056f4d69744c6266d1866ed4970b857b22416352fca86cd4ff"
+}

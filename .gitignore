@@ -6,7 +6,7 @@
 Thumbs.db
 
 # SQLx offline mode
-.sqlx/
+# .sqlx/
 
 # IDE
 .idea/

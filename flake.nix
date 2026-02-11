@@ -5,7 +5,6 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay.url = "github:oxalica/rust-overlay";
-
   };
 
   outputs =
@@ -31,7 +30,7 @@
         };
 
         # Python environment for MoviePy bridge
-        pythonEnv = pkgs.python313.withPackages (
+        pythonEnv = pkgs.python3.withPackages (
           ps: with ps; [
             moviepy
             pillow
@@ -45,8 +44,90 @@
           ]
         );
 
+        # Animus package
+        animus = pkgs.rustPlatform.buildRustPackage {
+          pname = "animus";
+          version = "0.1.0";
+          src = ./.;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+          };
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            makeWrapper
+          ];
+          buildInputs = with pkgs; [ openssl ];
+
+          SQLX_OFFLINE = "true";
+
+          postInstall = ''
+            wrapProgram $out/bin/animus \
+              --prefix PATH : ${
+                pkgs.lib.makeBinPath [
+                  pkgs.ffmpeg
+                  pkgs.imagemagick
+                  pkgs.ghostscript
+                  pkgs.piper-tts
+                  pythonEnv
+                ]
+              }
+          '';
+        };
+
+        # Application assets and scripts for the Docker image
+        appAssets = pkgs.stdenv.mkDerivation {
+          name = "animus-app-assets";
+          src = ./.;
+          installPhase = ''
+            mkdir -p $out/app
+            cp -r scripts $out/app/
+            cp -r src $out/app/
+            # Ensure templates directory structure exists
+            mkdir -p $out/app/templates/thumbnails
+            # Copy any existing template files
+            if [ -d templates ]; then
+              cp -r templates/. $out/app/templates/ 2>/dev/null || true
+            fi
+          '';
+        };
+
+        # Docker Image
+        dockerImage = pkgs.dockerTools.buildLayeredImage {
+          name = "animus";
+          tag = "latest";
+          contents = with pkgs; [
+            animus
+            appAssets
+            bash
+            coreutils
+            cacert
+            ffmpeg
+            imagemagick
+            ghostscript
+            piper-tts
+            pythonEnv
+          ];
+
+          config = {
+            Cmd = [ "/bin/animus" ];
+            Env = [
+              "PYTHONPATH=${pythonEnv}/${pkgs.python3.sitePackages}"
+              "PATH=/bin:/usr/bin"
+            ];
+            WorkingDir = "/app";
+          };
+        };
+
       in
       {
+        packages = {
+          default = animus;
+          animus = animus;
+          dockerImage = dockerImage;
+        };
+
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             # Rust
@@ -82,24 +163,6 @@
             echo "   Rust: $(rustc --version)"
             echo "   Python: $(python --version)"
             echo ""
-
-            # Setup local python venv for packages not in nixpkgs (like dspy-ai)
-            if [ ! -d ".venv" ]; then
-              echo "Creating Python virtual environment..."
-              python -m venv .venv
-            fi
-            source .venv/bin/activate
-
-            # Install dspy-ai if missing
-            if ! python -c "import dspy" &> /dev/null; then
-              echo "Installing dspy-ai into virtual environment..."
-              pip install dspy-ai
-            fi
-
-            # Check for Piper models
-            if [ ! -f "models/en_US-lessac-medium.onnx" ]; then
-              echo "⚠️  Piper models missing. Run 'just download-models' to fetch them."
-            fi
 
             echo "Commands:"
             echo "   cargo build    - Build the project"
