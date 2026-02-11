@@ -65,14 +65,16 @@ impl VideoProductionFlow {
             local_speaker_id: settings.tts.local_speaker_id.clone(),
             stability: settings.tts.stability,
             similarity_boost: settings.tts.similarity_boost,
-            speed: settings.tts.speed as f32,
-            ..Default::default()
+            speed: settings.tts.speed,
         };
 
         let asset_collector_config = AssetCollectorConfig {
             pexels_api_key: settings.assets.pexels_api_key.clone(),
+            leonardo_api_key: settings.assets.leonardo_api_key.clone(),
+            freesound_api_key: settings.assets.freesound_api_key.clone(),
             sd_api_url: settings.assets.sd_api_url.clone(),
-            ..Default::default()
+            sd_api_key: settings.assets.sd_api_key.clone(),
+            min_clips_per_section: settings.assets.min_clips_per_section,
         };
         let video_assembler_config = VideoAssemblerConfig::default();
         let thumbnail_config = ThumbnailConfig::default();

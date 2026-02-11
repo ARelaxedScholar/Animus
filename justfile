@@ -31,6 +31,12 @@ auth-account name niche *args:
 migration name:
     sqlx migrate add {{name}}
 
+# Build the Docker image using Nix
+docker-build:
+    nix build .#dockerImage
+    docker load < result
+    @echo "Docker image 'animus:latest' built and loaded."
+
 # Build the project
 build:
     cargo build

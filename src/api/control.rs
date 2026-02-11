@@ -12,6 +12,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::str::FromStr;
 use tokio::sync::RwLock;
 
 use crate::api::auth::auth_middleware;
@@ -242,7 +243,7 @@ async fn list_videos(
     State(state): State<AppState>,
     Query(params): Query<ListVideosQuery>,
 ) -> (StatusCode, Json<ApiResponse<Vec<VideoSummary>>>) {
-    let status = params.status.as_ref().map(|s| VideoStatus::from_str(s));
+    let status = params.status.as_ref().map(|s| VideoStatus::from_str(s).unwrap_or(VideoStatus::Scheduled));
     let limit = params.limit.unwrap_or(50);
     
     match db::list_videos(&state.db_pool, status, limit).await {

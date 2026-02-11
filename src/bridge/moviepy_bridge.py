@@ -111,6 +111,7 @@ def create_section_video(
     images_info = section_assets.get("images", [])
     
     all_visuals = []
+    loaded_clips = [] # Keep track for explicit closing
     
     # Load Video Clips
     for clip_info in video_clips_info:
@@ -128,6 +129,7 @@ def create_section_video(
                     if clip.w < width: clip = clip.resize(width=width)
                     clip = clip.crop(x_center=clip.w/2, y_center=clip.h/2, width=width, height=height)
                 all_visuals.append(clip)
+                loaded_clips.append(clip)
             except Exception as e:
                 print(f"Error loading clip {path}: {e}", file=sys.stderr)
 
@@ -149,18 +151,18 @@ def create_section_video(
                 img_dur = 5.0 
                 img = apply_ken_burns(img, img_dur, width, height)
                 all_visuals.append(img)
+                loaded_clips.append(img)
             except Exception as e:
                 print(f"Error loading image {path}: {e}", file=sys.stderr)
 
     if not all_visuals:
         clip = ColorClip(size=(width, height), color=(10, 10, 10), duration=duration)
         all_visuals.append(clip)
+        loaded_clips.append(clip)
 
     # Concatenate visuals to fill duration
-    # If short, repeat. If long, trim.
     current_dur = sum(c.duration for c in all_visuals)
     if current_dur < duration:
-        # Loop the visuals
         num_repeats = int(duration / current_dur) + 1
         all_visuals = (all_visuals * num_repeats)
     
@@ -191,12 +193,27 @@ def create_section_video(
         "audio": False,
         "preset": "ultrafast"
     }
-    if MOVIEPY_V2:
-        composite.write_videofile(section_path, **write_args)
-    else:
-        composite.write_videofile(section_path, verbose=False, logger=None, **write_args)
     
-    composite.close()
+    try:
+        if MOVIEPY_V2:
+            composite.write_videofile(section_path, **write_args)
+        else:
+            composite.write_videofile(section_path, verbose=False, logger=None, **write_args)
+    finally:
+        # Explicit cleanup to save memory
+        composite.close()
+        for c in loaded_clips:
+            try:
+                c.close()
+            except:
+                pass
+        for c in final_clips:
+            try:
+                c.close()
+            except:
+                pass
+        gc.collect()
+
     return section_path
 
 

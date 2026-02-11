@@ -67,7 +67,7 @@ pub async fn insert_video(pool: &PgPool, video: &Video) -> Result<(), sqlx::Erro
             created_at, updated_at)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"#,
     )
-    .bind(&video.id)
+    .bind(video.id)
     .bind(&video.status_str)
     .bind(&video.topic_brief)
     .bind(&video.script)
@@ -78,12 +78,12 @@ pub async fn insert_video(pool: &PgPool, video: &Video) -> Result<(), sqlx::Erro
     .bind(&video.thumbnail_path)
     .bind(&video.youtube_id)
     .bind(&video.youtube_url)
-    .bind(&video.scheduled_at)
-    .bind(&video.published_at)
+    .bind(video.scheduled_at)
+    .bind(video.published_at)
     .bind(&video.error_message)
     .bind(&video.failed_at_stage)
-    .bind(&video.created_at)
-    .bind(&video.updated_at)
+    .bind(video.created_at)
+    .bind(video.updated_at)
     .execute(pool)
     .await?;
     Ok(())
@@ -274,6 +274,7 @@ pub async fn clear_seed_queue(pool: &PgPool) -> Result<u64, sqlx::Error> {
 
 /// Insert a script evaluation record
 /// Returns the ID of the inserted evaluation
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_script_evaluation(
     pool: &PgPool,
     video_id: Uuid,
@@ -366,6 +367,7 @@ pub async fn get_best_evaluation(
 // =============================================================================
 
 /// Insert a performance snapshot for a video
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_video_performance(
     pool: &PgPool,
     video_id: Uuid,
@@ -494,6 +496,7 @@ pub async fn get_channel_baseline(
 }
 
 /// Insert or update channel baseline
+#[allow(clippy::too_many_arguments)]
 pub async fn upsert_channel_baseline(
     pool: &PgPool,
     avg_views_7d: f32,
@@ -563,6 +566,7 @@ pub async fn get_training_data(
         }
     };
     
+    #[allow(clippy::type_complexity)]
     let rows: Vec<(Uuid, Option<serde_json::Value>, Option<serde_json::Value>, Option<f32>)> = 
         query.fetch_all(pool).await?;
     

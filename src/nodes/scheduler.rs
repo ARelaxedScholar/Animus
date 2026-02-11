@@ -129,7 +129,7 @@ impl SchedulerLogic {
             if preferred_weekdays.contains(&candidate.weekday()) {
                 break;
             }
-            candidate = candidate + Duration::days(1);
+            candidate += Duration::days(1);
         }
 
         candidate

@@ -19,7 +19,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::config::ScriptImprovementConfig;
 use crate::db;
@@ -138,7 +138,7 @@ Write scripts that people will FINISH watching because they genuinely want to he
             },
             topic_brief.secondary_sources
                 .iter()
-                .map(|s| format!("{}", s.category_name()))
+                .map(|s| s.category_name().to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         );

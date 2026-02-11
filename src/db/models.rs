@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
+use std::str::FromStr;
 
 /// Video production status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -15,6 +16,21 @@ pub enum VideoStatus {
     Failed,
 }
 
+impl FromStr for VideoStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
+            "scheduled" => Self::Scheduled,
+            "producing" => Self::Producing,
+            "readyforreview" => Self::ReadyForReview,
+            "published" => Self::Published,
+            "failed" => Self::Failed,
+            _ => Self::Scheduled,
+        })
+    }
+}
+
 impl VideoStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -23,17 +39,6 @@ impl VideoStatus {
             Self::ReadyForReview => "readyforreview",
             Self::Published => "published",
             Self::Failed => "failed",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "scheduled" => Self::Scheduled,
-            "producing" => Self::Producing,
-            "readyforreview" => Self::ReadyForReview,
-            "published" => Self::Published,
-            "failed" => Self::Failed,
-            _ => Self::Scheduled,
         }
     }
 }
@@ -67,7 +72,7 @@ pub struct Video {
 impl Video {
     /// Get the status as an enum
     pub fn status(&self) -> VideoStatus {
-        VideoStatus::from_str(&self.status_str)
+        VideoStatus::from_str(&self.status_str).unwrap_or(VideoStatus::Scheduled)
     }
 
     /// Create a new video record for a production run

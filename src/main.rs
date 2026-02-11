@@ -232,7 +232,7 @@ async fn main() -> anyhow::Result<()> {
             shared_state.insert("production_in_progress".to_string(), serde_json::json!(false));
         }
 
-        let flow_result = std::panic::AssertUnwindSafe(flow.inner_mut().run(&mut *shared_state)).catch_unwind().await;
+        let flow_result = std::panic::AssertUnwindSafe(flow.inner_mut().run(&mut shared_state)).catch_unwind().await;
         
         match flow_result {
             Ok(Some(action)) => {

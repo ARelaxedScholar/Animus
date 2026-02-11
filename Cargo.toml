@@ -8,7 +8,7 @@ authors = ["Excelsior Academy"]
 
 [dependencies]
 # Orchestration framework
-orichalcum = { path = "../Orichalcum", features = ["llm"] }
+orichalcum = { version = "0.4", features = ["llm"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

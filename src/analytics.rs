@@ -8,10 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use sqlx::PgPool;
 use tokio::process::Command;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 /// Background task that runs analytics updates periodically
-pub async fn start_analytics_worker(db_pool: Arc<PgPool>, interval_hours: u64) {
+pub async fn start_analytics_worker(_db_pool: Arc<PgPool>, interval_hours: u64) {
     info!("Starting background analytics worker (interval: {} hours)", interval_hours);
     
     let python_executable = std::env::var("PYTHON_EXECUTABLE")
@@ -31,7 +31,7 @@ pub async fn start_analytics_worker(db_pool: Arc<PgPool>, interval_hours: u64) {
             .stderr(Stdio::piped())
             .spawn()
         {
-            Ok(mut child) => {
+            Ok(child) => {
                 let output = child.wait_with_output().await;
                 match output {
                     Ok(out) => {

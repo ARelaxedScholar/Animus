@@ -20,10 +20,11 @@ use crate::state_keys;
 use crate::storage::S3Client;
 
 /// TTS Provider selection
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TTSProvider {
     /// ElevenLabs cloud API
+    #[default]
     ElevenLabs,
     /// Qwen3-TTS (self-hosted or local)
     Qwen3,
@@ -33,12 +34,6 @@ pub enum TTSProvider {
     Coqui,
     /// Piper TTS (local, very fast)
     Piper,
-}
-
-impl Default for TTSProvider {
-    fn default() -> Self {
-        Self::ElevenLabs
-    }
 }
 
 /// Configuration for TTS - supports multiple providers
@@ -165,8 +160,7 @@ impl TTSLogic {
             .ok_or("ElevenLabs API key not configured")?;
         let voice_id = self.config.elevenlabs_voice_id.as_ref()
             .ok_or("ElevenLabs voice ID not configured")?;
-        let model_id = self.config.elevenlabs_model_id.as_ref()
-            .map(|s| s.as_str())
+        let model_id = self.config.elevenlabs_model_id.as_deref()
             .unwrap_or("eleven_monolingual_v1");
 
         let word_count = text.split_whitespace().count();
@@ -226,7 +220,7 @@ impl TTSLogic {
         
         // Split by sentences (period, exclamation, question mark followed by space or end)
         let sentences: Vec<&str> = text
-            .split_inclusive(|c| c == '.' || c == '!' || c == '?')
+            .split_inclusive(['.', '!', '?'])
             .collect();
         
         for sentence in sentences {
@@ -248,11 +242,10 @@ impl TTSLogic {
                 let parts: Vec<&str> = sentence.split(',').collect();
                 for part in parts {
                     let part = part.trim();
-                    if current_chunk.len() + part.len() + 2 > max_chars {
-                        if !current_chunk.is_empty() {
-                            chunks.push(current_chunk.trim().to_string());
-                            current_chunk = String::new();
-                        }
+                    if current_chunk.len() + part.len() + 2 > max_chars
+                        && !current_chunk.is_empty() {
+                        chunks.push(current_chunk.trim().to_string());
+                        current_chunk = String::new();
                     }
                     if !current_chunk.is_empty() {
                         current_chunk.push_str(", ");
@@ -324,8 +317,7 @@ impl TTSLogic {
     async fn generate_qwen3(&self, text: &str) -> Result<Vec<u8>, String> {
         let api_url = self.config.qwen3_api_url.as_ref()
             .ok_or("Qwen3-TTS API URL not configured")?;
-        let voice = self.config.qwen3_voice.as_ref()
-            .map(|s| s.as_str())
+        let voice = self.config.qwen3_voice.as_deref()
             .unwrap_or("default");
         let api_key = self.config.qwen3_api_key.as_ref();
 
@@ -421,11 +413,9 @@ impl TTSLogic {
     async fn generate_openai(&self, text: &str) -> Result<Vec<u8>, String> {
         let api_key = self.config.openai_api_key.as_ref()
             .ok_or("OpenAI API key not configured")?;
-        let voice = self.config.openai_voice.as_ref()
-            .map(|s| s.as_str())
+        let voice = self.config.openai_voice.as_deref()
             .unwrap_or("onyx");
-        let model = self.config.openai_model.as_ref()
-            .map(|s| s.as_str())
+        let model = self.config.openai_model.as_deref()
             .unwrap_or("tts-1-hd");
 
         let word_count = text.split_whitespace().count();

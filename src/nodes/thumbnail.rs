@@ -73,7 +73,7 @@ impl ThumbnailLogic {
         info!("Thumbnail: Calling Gemini/Imagen for '{}'", title);
 
         // TODO: Implement Gemini Imagen generation
-        return Err("Imagen generation not implemented".to_string());
+        Err("Imagen generation not implemented".to_string())
     }
 
     /// Fallback: Generate a simple gradient thumbnail with text overlay

@@ -29,6 +29,8 @@ pub struct AssetCollectorConfig {
     pub freesound_api_key: Option<String>,
     /// Stable Diffusion API URL (optional)
     pub sd_api_url: Option<String>,
+    /// Stable Diffusion API key (optional)
+    pub sd_api_key: Option<String>,
     /// Minimum clips per section
     pub min_clips_per_section: u32,
 }
@@ -40,6 +42,7 @@ impl Default for AssetCollectorConfig {
             leonardo_api_key: None,
             freesound_api_key: None,
             sd_api_url: None,
+            sd_api_key: None,
             min_clips_per_section: 3,
         }
     }
@@ -50,6 +53,7 @@ impl Default for AssetCollectorConfig {
 struct VisualIntent {
     refined_pexels_queries: Vec<String>,
     ai_image_prompt: String,
+    #[allow(dead_code)]
     sfx_triggers: Vec<crate::nodes::SFXTrigger>,
 }
 
@@ -156,8 +160,8 @@ impl AssetCollectorLogic {
         // Only remove prefixes if they appear at the start
         for prefix in prefixes_to_remove {
             let trimmed = query.trim();
-            if trimmed.starts_with(prefix) {
-                query = trimmed[prefix.len()..].trim().to_string();
+            if let Some(stripped) = trimmed.strip_prefix(prefix) {
+                query = stripped.trim().to_string();
             }
         }
         

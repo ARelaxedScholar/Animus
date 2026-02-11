@@ -6,10 +6,8 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::info;
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -41,6 +39,7 @@ struct AuthCallback {
 }
 
 struct AppState {
+    #[allow(dead_code)]
     args: Args,
     tx: mpsc::Sender<String>,
 }

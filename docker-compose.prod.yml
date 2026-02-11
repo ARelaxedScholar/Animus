@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  animus:
+    image: animus:latest
+    container_name: animus
+    restart: always
+    environment:
+      - RUST_LOG=animus=info,orichalcum=info
+      - DATABASE_URL=postgres://animus:animus@postgres:5432/animus
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
+      - S3_SECRET_KEY=${S3_SECRET_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+      - /tmp/animus:/tmp/animus
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    networks:
+      - server_network
+
+networks:
+  server_network:
+    external: true

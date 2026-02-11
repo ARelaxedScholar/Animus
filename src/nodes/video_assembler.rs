@@ -253,9 +253,9 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
                     },
                 };
 
-                if let Ok(_) = self.run_bridge(&short_bridge_input).await {
+                if self.run_bridge(&short_bridge_input).await.is_ok() {
                     let s3_short_path = format!("videos/{}/short.mp4", video_id);
-                    if let Ok(_) = self.upload_to_s3(&shorts_output_path, &s3_short_path).await {
+                    if self.upload_to_s3(&shorts_output_path, &s3_short_path).await.is_ok() {
                         shorts_path = Some(s3_short_path);
                         info!("VideoAssembler: Vertical Short uploaded successfully");
                     }
