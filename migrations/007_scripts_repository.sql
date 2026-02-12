@@ -1,7 +1,7 @@
 -- Script Repository
 -- Stores all generated scripts for reuse, analysis, and export
 
-CREATE TABLE scripts (
+CREATE TABLE IF NOT EXISTS scripts (
     id SERIAL PRIMARY KEY,
     -- Optional link to a video (if this script was used for a video)
     video_id UUID REFERENCES videos(id) ON DELETE SET NULL,
@@ -23,12 +23,12 @@ CREATE TABLE scripts (
 );
 
 -- Indexes for fast lookup
-CREATE INDEX idx_scripts_video_id ON scripts(video_id);
-CREATE INDEX idx_scripts_topic ON scripts(topic);
-CREATE INDEX idx_scripts_word_count ON scripts(word_count);
-CREATE INDEX idx_scripts_quality_score ON scripts(quality_score DESC);
-CREATE INDEX idx_scripts_content_hash ON scripts(content_hash);
-CREATE INDEX idx_scripts_created_at ON scripts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scripts_video_id ON scripts(video_id);
+CREATE INDEX IF NOT EXISTS idx_scripts_topic ON scripts(topic);
+CREATE INDEX IF NOT EXISTS idx_scripts_word_count ON scripts(word_count);
+CREATE INDEX IF NOT EXISTS idx_scripts_quality_score ON scripts(quality_score DESC);
+CREATE INDEX IF NOT EXISTS idx_scripts_content_hash ON scripts(content_hash);
+CREATE INDEX IF NOT EXISTS idx_scripts_created_at ON scripts(created_at DESC);
 
 -- Trigger to update updated_at
 CREATE OR REPLACE FUNCTION update_scripts_updated_at()
@@ -39,6 +39,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS scripts_updated_at ON scripts;
 CREATE TRIGGER scripts_updated_at
     BEFORE UPDATE ON scripts
     FOR EACH ROW
@@ -94,7 +95,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- View for easy script export
-CREATE VIEW script_exports AS
+CREATE OR REPLACE VIEW script_exports AS
 SELECT
     id,
     video_id,
