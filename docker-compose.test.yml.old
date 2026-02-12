@@ -41,7 +41,7 @@ services:
       "
 
   animus:
-    image: animus:latest-fixed2
+    image: animus:latest
     container_name: animus-test-app
     depends_on:
       postgres:
@@ -65,13 +65,10 @@ services:
       - TTS_PROVIDER=${TTS_PROVIDER:-openai}
       - OPENAI_TTS_API_KEY=${OPENAI_TTS_API_KEY}
       # Test seed
-      - SEED_TOPIC=The importance of persistent effort in the face of failure
-      - SOURCE_FOCUS=Stoicism
+#      - SEED_TOPIC=The power of Stoic indifference in modern chaos
+ #     - SOURCE_FOCUS=Stoicism
       - RUST_LOG=animus=debug,orichalcum=debug
-    ports:
-      - "8080:8080"
     volumes:
       - ./models:/app/models
       - ./data:/app/data
-      - ./migrations:/app/migrations
     restart: on-failure

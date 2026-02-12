@@ -643,7 +643,7 @@ pub async fn list_scripts(
 
     if let Some(vid) = video_id {
         param_count += 1;
-        query.push_str(&format!(" AND video_id = ${}", param_count));
+        query.push_str(&format!(" AND video_id = ${}::uuid", param_count));
         params.push(vid.to_string());
     }
 
@@ -655,23 +655,23 @@ pub async fn list_scripts(
 
     if let Some(min_q) = min_quality {
         param_count += 1;
-        query.push_str(&format!(" AND quality_score >= ${}", param_count));
+        query.push_str(&format!(" AND quality_score >= ${}::real", param_count));
         params.push(min_q.to_string());
     }
 
     if let Some(min_wc) = min_word_count {
         param_count += 1;
-        query.push_str(&format!(" AND word_count >= ${}", param_count));
+        query.push_str(&format!(" AND word_count >= ${}::integer", param_count));
         params.push(min_wc.to_string());
     }
 
     if let Some(max_wc) = max_word_count {
         param_count += 1;
-        query.push_str(&format!(" AND word_count <= ${}", param_count));
+        query.push_str(&format!(" AND word_count <= ${}::integer", param_count));
         params.push(max_wc.to_string());
     }
 
-    query.push_str(&format!(" ORDER BY created_at DESC LIMIT ${} OFFSET ${}", param_count + 1, param_count + 2));
+    query.push_str(&format!(" ORDER BY created_at DESC LIMIT ${}::bigint OFFSET ${}::bigint", param_count + 1, param_count + 2));
     params.push(limit.to_string());
     params.push(offset.to_string());
 
