@@ -65,8 +65,8 @@ services:
       - TTS_PROVIDER=${TTS_PROVIDER:-openai}
       - OPENAI_TTS_API_KEY=${OPENAI_TTS_API_KEY}
       # Test seed
-      - SEED_TOPIC=The power of Stoic indifference in modern chaos
-      - SOURCE_FOCUS=Stoicism
+#      - SEED_TOPIC=The power of Stoic indifference in modern chaos
+ #     - SOURCE_FOCUS=Stoicism
       - RUST_LOG=animus=debug,orichalcum=debug
     volumes:
       - ./models:/app/models
