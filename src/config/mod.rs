@@ -3,7 +3,7 @@
 mod settings;
 
 pub use settings::{
-    AssetConfig, ChannelConfig, ContentStrategyConfig, DatabaseConfig, LlmConfig, 
+    AssetConfig, ChannelConfig, ContentStrategyConfig, DatabaseConfig, LlmConfig,
     NotificationConfig, S3Config, ScriptImprovementConfig, Settings, TtsConfig, YouTubeConfig,
 };
 

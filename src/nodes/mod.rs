@@ -54,7 +54,9 @@ pub struct TopicBrief {
     pub is_autonomous: bool,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 /// Wisdom source categories
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

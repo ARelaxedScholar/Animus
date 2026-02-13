@@ -23,6 +23,8 @@ import traceback
 import resource
 import signal
 from typing import Optional, List, Tuple
+import logging
+logging.getLogger('moviepy').setLevel(logging.WARNING)
 
 try:
     # MoviePy v2.x imports
@@ -58,6 +60,23 @@ CAPTION_FONT = "Arial-Bold" # Requires ImageMagick
 MUSIC_VOLUME = 0.15
 SFX_TEXTURE_VOLUME = 0.1
 SFX_PUNCTUATION_VOLUME = 0.3
+
+
+def safe_print_json(data):
+    """Print JSON to stdout, ignoring BrokenPipeError."""
+    try:
+        print(json.dumps(data))
+        sys.stdout.flush()
+    except (BrokenPipeError, IOError):
+        # Pipe closed by parent process (Rust), exit silently
+        try:
+            sys.stderr.close()
+        except:
+            pass
+        sys.exit(0)
+    except Exception:
+        # Any other error writing output, exit silently
+        sys.exit(0)
 
 
 def apply_fade(clip, fade_in_duration=0.5, fade_out_duration=0.5):
@@ -230,7 +249,7 @@ def create_section_video(
     
     try:
         if MOVIEPY_V2:
-            composite.write_videofile(section_path, **write_args)
+            composite.write_videofile(section_path, logger=None, **write_args)
         else:
             composite.write_videofile(section_path, verbose=False, logger=None, **write_args)
     finally:
@@ -310,7 +329,7 @@ def assemble_production(config: dict) -> dict:
             if MOVIEPY_V2:
                 fallback = ColorClip(size=(width, height), color=(30, 30, 30), duration=dur)
                 fallback = fallback.with_duration(dur)
-                fallback.write_videofile(fallback_path, fps=DEFAULT_FPS, codec="libx264", audio=False, preset="ultrafast")
+                fallback.write_videofile(fallback_path, fps=DEFAULT_FPS, codec="libx264", audio=False, logger=None, preset="ultrafast")
             else:
                 fallback = ColorClip(size=(width, height), color=(30, 30, 30), duration=dur)
                 fallback.write_videofile(fallback_path, fps=DEFAULT_FPS, codec="libx264", audio=False, verbose=False, logger=None, preset="ultrafast")
@@ -342,7 +361,10 @@ def assemble_production(config: dict) -> dict:
     # 5. Add SFX Punctuations (Future: map from sfx_triggers)
     
     composite_audio = CompositeAudioClip(audio_tracks)
-    video_full = video_full.set_audio(composite_audio)
+    if MOVIEPY_V2:
+        video_full = video_full.with_audio(composite_audio)
+    else:
+        video_full = video_full.set_audio(composite_audio)
 
     # 6. Captions for Shorts
     if is_short:
@@ -359,9 +381,9 @@ def assemble_production(config: dict) -> dict:
     }
     
     if MOVIEPY_V2:
-        video_full.write_videofile(output_path, **render_args)
+        video_full.write_videofile(output_path, logger=None, **render_args)
     else:
-        video_full.write_videofile(output_path, **render_args)
+        video_full.write_videofile(output_path, verbose=False, logger=None, **render_args)
 
     return {
         "success": True,
@@ -373,14 +395,14 @@ def assemble_production(config: dict) -> dict:
 def setup_memory_limits():
     """Set memory limits to prevent OOM kills."""
     try:
-        # 2GB memory limit (bytes)
-        memory_limit_bytes = 2 * 1024 * 1024 * 1024
+        # 4GB memory limit (bytes) - increased for HD video processing
+        memory_limit_bytes = 4 * 1024 * 1024 * 1024
         resource.setrlimit(resource.RLIMIT_AS, (memory_limit_bytes, memory_limit_bytes))
     except (ValueError, resource.error):
         pass  # Not supported on this system
 
-def setup_timeout_handler(timeout_seconds=300):
-    """Set up timeout handler for long-running operations."""
+def setup_timeout_handler(timeout_seconds=1800):
+    """Set up timeout handler for long-running operations (30 minutes default)."""
     def timeout_handler(signum, frame):
         raise TimeoutError(f"Operation timed out after {timeout_seconds} seconds")
     
@@ -476,19 +498,25 @@ def get_system_info() -> dict:
 def main():
     # Install global exception handler
     def global_exception_handler(exc_type, exc_value, exc_traceback):
-        print(json.dumps({
+        safe_print_json({
             "success": False,
             "error": f"Unhandled exception: {exc_type.__name__}: {exc_value}",
             "trace": ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback)),
             "system_info": get_system_info() if 'get_system_info' in globals() else {}
-        }))
+        })
         sys.exit(1)
     
     sys.excepthook = global_exception_handler
     
+    # Handle SIGPIPE gracefully (broken pipe when Rust closes connection)
+    try:
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    except (AttributeError, ValueError):
+        pass  # SIGPIPE not available on Windows
+    
     # Set up resource limits
     setup_memory_limits()
-    setup_timeout_handler(300)  # 5 minute timeout
+    setup_timeout_handler(1800)  # 30 minute timeout for video rendering
     
     try:
         # Import psutil for memory info (optional)
@@ -499,52 +527,52 @@ def main():
     
     input_data = sys.stdin.read()
     if not input_data:
-        print(json.dumps({
+        safe_print_json({
             "success": False, 
             "error": "No input data provided",
             "system_info": get_system_info() if 'get_system_info' in globals() else {}
-        }))
+        })
         sys.exit(1)
     
     try:
         config = json.loads(input_data)
     except json.JSONDecodeError as e:
-        print(json.dumps({
+        safe_print_json({
             "success": False,
             "error": f"Invalid JSON input: {e}",
             "input_preview": input_data[:500] if len(input_data) > 500 else input_data
-        }))
+        })
         sys.exit(1)
     
     # Validate input files
     file_errors = validate_input_files(config)
     if file_errors:
-        print(json.dumps({
+        safe_print_json({
             "success": False,
             "error": f"File validation failed: {file_errors}",
             "file_errors": file_errors,
             "system_info": get_system_info() if 'get_system_info' in globals() else {}
-        }))
+        })
         sys.exit(1)
     
     try:
         result = assemble_production(config)
         result["system_info"] = get_system_info() if 'get_system_info' in globals() else {}
-        print(json.dumps(result))
+        safe_print_json(result)
     except TimeoutError as e:
-        print(json.dumps({
+        safe_print_json({
             "success": False,
             "error": str(e),
             "system_info": get_system_info() if 'get_system_info' in globals() else {}
-        }))
+        })
         sys.exit(1)
     except Exception as e:
-        print(json.dumps({
+        safe_print_json({
             "success": False, 
             "error": str(e), 
             "trace": traceback.format_exc(),
             "system_info": get_system_info() if 'get_system_info' in globals() else {}
-        }))
+        })
         sys.exit(1)
     finally:
         # Disable timeout alarm

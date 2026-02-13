@@ -39,7 +39,10 @@ just dev
 just migrate
 
 # 5. Add your first YouTube Account
-just auth-account "Excelsior Academy" "stoicism" --client-id <ID> --client-secret <SECRET>
+# Rust OAuth (may have issues):
+#   just auth-account "Excelsior Academy" "stoicism" --client-id <ID> --client-secret <SECRET>
+# Python OAuth (recommended):
+just add-account "Excelsior Academy" "stoicism"
 
 # 6. Start the full dashboard (Daemon + TUI)
 just dashboard
@@ -51,7 +54,10 @@ Managed via `just`:
 
 - `just dev` - Start infrastructure (Postgres, MinIO).
 - `just migrate` - Apply DB migrations.
-- `just auth-account <name> <niche>` - Easy OAuth registration for a new YouTube channel.
+- `just auth-account <name> <niche>` - Rust OAuth (may have issues)
+- `just add-account <name> <niche>` - Python OAuth (recommended)
+- `just list-accounts` - List all YouTube accounts
+- `just test-account` - Test YouTube credentials
 - `just run` - Run the production daemon.
 - `just tui` - Run the monitoring dashboard.
 - `just dashboard` - Start daemon (background) and TUI (foreground).

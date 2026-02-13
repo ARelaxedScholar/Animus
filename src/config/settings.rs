@@ -78,6 +78,8 @@ pub struct YouTubeConfig {
     pub client_id: String,
     pub client_secret: String,
     pub refresh_token: String,
+    /// Default YouTube account ID to use (optional, for single-account setups)
+    pub default_account_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -141,16 +143,15 @@ pub struct ScriptImprovementConfig {
 
 impl Settings {
     /// Load settings from environment variables
+    #[allow(unsafe_code)]
     pub fn from_env() -> Result<Self, config::ConfigError> {
+        #[cfg(not(test))]
         dotenvy::dotenv().ok();
 
         let settings = config::Config::builder()
             // Database
             .set_default("database.url", "")?
-            .set_override_option(
-                "database.url",
-                std::env::var("DATABASE_URL").ok(),
-            )?
+            .set_override_option("database.url", std::env::var("DATABASE_URL").ok())?
             // S3
             .set_default("s3.endpoint", "http://localhost:9000")?
             .set_override_option("s3.endpoint", std::env::var("S3_ENDPOINT").ok())?
@@ -208,23 +209,34 @@ impl Settings {
             .set_override_option("tts.qwen3_voice", std::env::var("QWEN3_VOICE").ok())?
             // OpenAI TTS
             .set_default("tts.openai_api_key", Option::<String>::None)?
-            .set_override_option("tts.openai_api_key", std::env::var("OPENAI_TTS_API_KEY").ok())?
+            .set_override_option(
+                "tts.openai_api_key",
+                std::env::var("OPENAI_TTS_API_KEY").ok(),
+            )?
             .set_default("tts.openai_voice", Option::<String>::None)?
             .set_override_option("tts.openai_voice", std::env::var("OPENAI_TTS_VOICE").ok())?
             .set_default("tts.openai_model", Option::<String>::None)?
             .set_override_option("tts.openai_model", std::env::var("OPENAI_TTS_MODEL").ok())?
             // Local TTS
             .set_default("tts.local_model_path", Option::<String>::None)?
-            .set_override_option("tts.local_model_path", std::env::var("LOCAL_TTS_MODEL_PATH").ok())?
+            .set_override_option(
+                "tts.local_model_path",
+                std::env::var("LOCAL_TTS_MODEL_PATH").ok(),
+            )?
             .set_default("tts.local_speaker_id", Option::<String>::None)?
-            .set_override_option("tts.local_speaker_id", std::env::var("LOCAL_TTS_SPEAKER_ID").ok())?
+            .set_override_option(
+                "tts.local_speaker_id",
+                std::env::var("LOCAL_TTS_SPEAKER_ID").ok(),
+            )?
             // Common TTS settings
             .set_default("tts.stability", 0.5)?
             .set_default("tts.similarity_boost", 0.75)?
             .set_default("tts.speed", 1.0)?
             .set_override_option(
                 "tts.speed",
-                std::env::var("TTS_SPEED").ok().and_then(|v| v.parse::<f64>().ok()),
+                std::env::var("TTS_SPEED")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok()),
             )?
             // Assets (Pexels, AI services, sound effects)
             .set_default("assets.pexels_api_key", "")?
@@ -243,12 +255,20 @@ impl Settings {
             .set_default("assets.freesound_api_key", Option::<String>::None)?
             .set_override_option(
                 "assets.freesound_api_key",
-                std::env::var("FREESOUND_API_KEY").ok().filter(|s| !s.is_empty()),
+                std::env::var("FREESOUND_API_KEY")
+                    .ok()
+                    .filter(|s| !s.is_empty()),
             )?
             .set_default("assets.sd_api_url", Option::<String>::None)?
-            .set_override_option("assets.sd_api_url", std::env::var("SD_API_URL").ok().filter(|s| !s.is_empty()))?
+            .set_override_option(
+                "assets.sd_api_url",
+                std::env::var("SD_API_URL").ok().filter(|s| !s.is_empty()),
+            )?
             .set_default("assets.sd_api_key", Option::<String>::None)?
-            .set_override_option("assets.sd_api_key", std::env::var("SD_API_KEY").ok().filter(|s| !s.is_empty()))?
+            .set_override_option(
+                "assets.sd_api_key",
+                std::env::var("SD_API_KEY").ok().filter(|s| !s.is_empty()),
+            )?
             .set_default("assets.min_clips_per_section", 3)?
             .set_override_option(
                 "assets.min_clips_per_section",
@@ -286,10 +306,7 @@ impl Settings {
             )?
             // YouTube
             .set_default("youtube.client_id", "")?
-            .set_override_option(
-                "youtube.client_id",
-                std::env::var("YOUTUBE_CLIENT_ID").ok(),
-            )?
+            .set_override_option("youtube.client_id", std::env::var("YOUTUBE_CLIENT_ID").ok())?
             .set_default("youtube.client_secret", "")?
             .set_override_option(
                 "youtube.client_secret",
@@ -299,6 +316,13 @@ impl Settings {
             .set_override_option(
                 "youtube.refresh_token",
                 std::env::var("YOUTUBE_REFRESH_TOKEN").ok(),
+            )?
+            .set_default("youtube.default_account_id", Option::<i32>::None)?
+            .set_override_option(
+                "youtube.default_account_id",
+                std::env::var("YOUTUBE_DEFAULT_ACCOUNT_ID")
+                    .ok()
+                    .and_then(|v| v.parse::<i32>().ok()),
             )?
             // Channel
             .set_default("channel.name", "Excelsior Academy")?
@@ -410,6 +434,7 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    #![allow(unsafe_code)]
     use super::*;
 
     #[test]
@@ -426,18 +451,27 @@ mod tests {
         std::env::set_var("LEONARDO_API_KEY", "test_leonardo_key");
         std::env::set_var("FREESOUND_API_KEY", "test_freesound_key");
         std::env::set_var("ASSET_MIN_CLIPS_PER_SECTION", "5");
-        
+
         let settings = Settings::from_env().unwrap();
-        assert_eq!(settings.assets.leonardo_api_key, Some("test_leonardo_key".to_string()));
-        assert_eq!(settings.assets.freesound_api_key, Some("test_freesound_key".to_string()));
+        assert_eq!(
+            settings.assets.leonardo_api_key,
+            Some("test_leonardo_key".to_string())
+        );
+        assert_eq!(
+            settings.assets.freesound_api_key,
+            Some("test_freesound_key".to_string())
+        );
         assert_eq!(settings.assets.min_clips_per_section, 5);
-        
+
         // Test backward compatibility with LEONARDOAI_API_KEY
         std::env::remove_var("LEONARDO_API_KEY");
         std::env::set_var("LEONARDOAI_API_KEY", "test_leonardoai_key");
         let settings2 = Settings::from_env().unwrap();
-        assert_eq!(settings2.assets.leonardo_api_key, Some("test_leonardoai_key".to_string()));
-        
+        assert_eq!(
+            settings2.assets.leonardo_api_key,
+            Some("test_leonardoai_key".to_string())
+        );
+
         // Clean up
         std::env::remove_var("LEONARDOAI_API_KEY");
         std::env::remove_var("FREESOUND_API_KEY");

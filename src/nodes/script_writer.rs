@@ -11,22 +11,21 @@
 //! 5. Repeat until threshold met or max iterations reached
 
 use async_trait::async_trait;
-use orichalcum::{AsyncNodeLogic, NodeValue};
 use orichalcum::llm::{Client, Enabled, Providers};
+use orichalcum::{AsyncNodeLogic, NodeValue};
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
-
 use crate::config::ScriptImprovementConfig;
 use crate::db;
 use crate::nodes::{
-    Script, ScriptSection, TopicBrief,
-    ScriptEvaluation, CriteriaScores, CriterionScore, SpecificImprovement, ScoredScript
+    CriteriaScores, CriterionScore, ScoredScript, Script, ScriptEvaluation, ScriptSection,
+    SpecificImprovement, TopicBrief,
 };
 use crate::state_keys;
 
@@ -70,10 +69,10 @@ impl ScriptWriterLogic {
         llm_client: Arc<Client<Providers<orichalcum::llm::Disabled, Enabled, Enabled>>>,
         db_pool: Arc<PgPool>,
     ) -> Self {
-        Self { 
-            config, 
-            improvement_config, 
-            llm_client, 
+        Self {
+            config,
+            improvement_config,
+            llm_client,
             db_pool,
         }
     }
@@ -120,8 +119,7 @@ AVOID AI PATTERNS:
 - Avoid too many semicolons and em-dashes
 
 Write scripts that people will FINISH watching because they genuinely want to hear what comes next."#,
-            self.config.channel_name,
-            self.config.persona
+            self.config.channel_name, self.config.persona
         )
     }
 
@@ -137,7 +135,8 @@ Write scripts that people will FINISH watching because they genuinely want to he
                 crate::nodes::WisdomSource::Biography { subject } => subject.clone(),
                 crate::nodes::WisdomSource::Psychology { author } => author.clone(),
             },
-            topic_brief.secondary_sources
+            topic_brief
+                .secondary_sources
                 .iter()
                 .map(|s| s.category_name().to_string())
                 .collect::<Vec<_>>()
@@ -253,7 +252,8 @@ Respond in JSON format only."#.to_string()
 
     /// Build the judge user prompt
     fn build_judge_user_prompt(&self, script: &Script, topic_brief: &TopicBrief) -> String {
-        format!(r#"Evaluate this YouTube script:
+        format!(
+            r#"Evaluate this YouTube script:
 
 TOPIC: {}
 TARGET DURATION: {} minutes (~{} words)
@@ -303,13 +303,15 @@ are replaced with a proper value based on your evalution. :
         evaluation: &ScriptEvaluation,
         force_dramatic_changes: bool,
     ) -> String {
-        let improvements = evaluation.specific_improvements
+        let improvements = evaluation
+            .specific_improvements
             .iter()
             .map(|i| format!("- {}: {} → {}", i.location, i.issue, i.suggestion))
             .collect::<Vec<_>>()
             .join("\n");
 
-        let ai_fixes = evaluation.ai_telltale_signs
+        let ai_fixes = evaluation
+            .ai_telltale_signs
             .iter()
             .map(|s| format!("- {}", s))
             .collect::<Vec<_>>()
@@ -335,7 +337,8 @@ You need to take creative risks and try something genuinely different.
             ""
         };
 
-        format!(r#"Revise this script based on the feedback below.
+        format!(
+            r#"Revise this script based on the feedback below.
 {dramatic_instruction}
 CRITICAL: Maintain what's working (the strengths) while fixing the weaknesses.
 
@@ -388,8 +391,18 @@ IMPORTANT:
 - Do NOT explain your changes. Just return the improved script JSON."#,
             dramatic_instruction = dramatic_instruction,
             script_text = script.full_text,
-            strengths = evaluation.strengths.iter().map(|s| format!("- {}", s)).collect::<Vec<_>>().join("\n"),
-            weaknesses = evaluation.weaknesses.iter().map(|s| format!("- {}", s)).collect::<Vec<_>>().join("\n"),
+            strengths = evaluation
+                .strengths
+                .iter()
+                .map(|s| format!("- {}", s))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            weaknesses = evaluation
+                .weaknesses
+                .iter()
+                .map(|s| format!("- {}", s))
+                .collect::<Vec<_>>()
+                .join("\n"),
             ai_fixes = ai_fixes,
             improvements = improvements,
             target_words = target_words
@@ -424,27 +437,38 @@ IMPORTANT:
                 title: v.get("title")?.as_str()?.to_string(),
                 narration: v.get("narration")?.as_str()?.to_string(),
                 duration_seconds: v.get("duration_seconds")?.as_u64()? as u32,
-                visual_suggestions: v.get("visual_suggestions")?
+                visual_suggestions: v
+                    .get("visual_suggestions")?
                     .as_array()?
                     .iter()
                     .filter_map(|s| s.as_str().map(|s| s.to_string()))
                     .collect(),
-                mood: v.get("mood").and_then(|m| m.as_str()).unwrap_or("neutral").to_string(),
-                sfx_triggers: v.get("sfx_triggers")
+                mood: v
+                    .get("mood")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("neutral")
+                    .to_string(),
+                sfx_triggers: v
+                    .get("sfx_triggers")
                     .and_then(|a| a.as_array())
-                    .map(|arr| arr.iter().filter_map(|t| {
-                        Some(crate::nodes::SFXTrigger {
-                            sfx_type: t.get("sfx_type")?.as_str()?.to_string(),
-                            sound: t.get("sound")?.as_str()?.to_string(),
-                            relative_time: t.get("relative_time")?.as_f64()? as f32,
-                            volume: t.get("volume")?.as_f64()? as f32,
-                        })
-                    }).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|t| {
+                                Some(crate::nodes::SFXTrigger {
+                                    sfx_type: t.get("sfx_type")?.as_str()?.to_string(),
+                                    sound: t.get("sound")?.as_str()?.to_string(),
+                                    relative_time: t.get("relative_time")?.as_f64()? as f32,
+                                    volume: t.get("volume")?.as_f64()? as f32,
+                                })
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default(),
             })
         };
 
-        let hook = parsed.get("hook")
+        let hook = parsed
+            .get("hook")
             .and_then(parse_section)
             .unwrap_or_else(|| ScriptSection {
                 title: "Hook".to_string(),
@@ -455,12 +479,14 @@ IMPORTANT:
                 sfx_triggers: vec![],
             });
 
-        let sections: Vec<ScriptSection> = parsed.get("sections")
+        let sections: Vec<ScriptSection> = parsed
+            .get("sections")
             .and_then(|v| v.as_array())
             .map(|arr| arr.iter().filter_map(parse_section).collect())
             .unwrap_or_default();
 
-        let cta = parsed.get("cta")
+        let cta = parsed
+            .get("cta")
             .and_then(parse_section)
             .unwrap_or_else(|| ScriptSection {
                 title: "Call to Action".to_string(),
@@ -485,7 +511,8 @@ IMPORTANT:
             + sections.iter().map(|s| s.duration_seconds).sum::<u32>()
             + cta.duration_seconds;
 
-        let shorts_candidate_index = parsed.get("shorts_candidate_index")
+        let shorts_candidate_index = parsed
+            .get("shorts_candidate_index")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize);
 
@@ -513,13 +540,21 @@ IMPORTANT:
             .map_err(|e| format!("Failed to parse evaluation JSON: {}", e))?;
 
         let parse_criterion = |name: &str| -> CriterionScore {
-            parsed.get("criteria")
+            parsed
+                .get("criteria")
                 .and_then(|c| c.get(name))
                 .map(|v| CriterionScore {
                     score: v.get("score").and_then(|s| s.as_f64()).unwrap_or(5.0) as f32,
-                    notes: v.get("notes").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+                    notes: v
+                        .get("notes")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                 })
-                .unwrap_or(CriterionScore { score: 5.0, notes: String::new() })
+                .unwrap_or(CriterionScore {
+                    score: 5.0,
+                    notes: String::new(),
+                })
         };
 
         let criteria = CriteriaScores {
@@ -533,27 +568,38 @@ IMPORTANT:
         };
 
         let parse_string_array = |key: &str| -> Vec<String> {
-            parsed.get(key)
+            parsed
+                .get(key)
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|s| s.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default()
         };
 
-        let specific_improvements: Vec<SpecificImprovement> = parsed.get("specific_improvements")
+        let specific_improvements: Vec<SpecificImprovement> = parsed
+            .get("specific_improvements")
             .and_then(|v| v.as_array())
             .map(|arr| {
-                arr.iter().filter_map(|item| {
-                    Some(SpecificImprovement {
-                        location: item.get("location")?.as_str()?.to_string(),
-                        issue: item.get("issue")?.as_str()?.to_string(),
-                        suggestion: item.get("suggestion")?.as_str()?.to_string(),
+                arr.iter()
+                    .filter_map(|item| {
+                        Some(SpecificImprovement {
+                            location: item.get("location")?.as_str()?.to_string(),
+                            issue: item.get("issue")?.as_str()?.to_string(),
+                            suggestion: item.get("suggestion")?.as_str()?.to_string(),
+                        })
                     })
-                }).collect()
+                    .collect()
             })
             .unwrap_or_default();
 
         Ok(ScriptEvaluation {
-            overall_score: parsed.get("overall_score").and_then(|s| s.as_f64()).unwrap_or(5.0) as f32,
+            overall_score: parsed
+                .get("overall_score")
+                .and_then(|s| s.as_f64())
+                .unwrap_or(5.0) as f32,
             criteria,
             strengths: parse_string_array("strengths"),
             weaknesses: parse_string_array("weaknesses"),
@@ -567,35 +613,49 @@ IMPORTANT:
         let system_prompt = self.build_system_prompt();
         let user_prompt = self.build_user_prompt(topic_brief);
 
-        let response = self.llm_client.gemini_complete()
+        let response = self
+            .llm_client
+            .gemini_complete()
             .model("gemini-3-flash-preview")
             .system(&system_prompt)
             .user(&user_prompt)
             .temperature(0.8) // Higher temperature for diversity
             .max_tokens(8000)
-            .await.map_err(|e| format!("Gemini call failed: {}", e))?;
+            .await
+            .map_err(|e| format!("Gemini call failed: {}", e))?;
 
         self.parse_script(&response, topic_brief.video_id)
     }
 
     /// Evaluate a script using DeepSeek
-    async fn evaluate_script(&self, script: &Script, topic_brief: &TopicBrief) -> Result<ScriptEvaluation, String> {
+    async fn evaluate_script(
+        &self,
+        script: &Script,
+        topic_brief: &TopicBrief,
+    ) -> Result<ScriptEvaluation, String> {
         // Use hardcoded DeepSeek prompt
         self.evaluate_script_deepseek(script, topic_brief).await
     }
 
     /// Evaluate using hardcoded DeepSeek prompt
-    async fn evaluate_script_deepseek(&self, script: &Script, topic_brief: &TopicBrief) -> Result<ScriptEvaluation, String> {
+    async fn evaluate_script_deepseek(
+        &self,
+        script: &Script,
+        topic_brief: &TopicBrief,
+    ) -> Result<ScriptEvaluation, String> {
         let system_prompt = self.build_judge_system_prompt();
         let user_prompt = self.build_judge_user_prompt(script, topic_brief);
 
-        let response = self.llm_client.deepseek_complete()
+        let response = self
+            .llm_client
+            .deepseek_complete()
             .model("deepseek-chat")
             .system(&system_prompt)
             .user(&user_prompt)
             .temperature(0.3) // Lower temperature for consistency
             .max_tokens(2000)
-            .await.map_err(|e| format!("DeepSeek call failed: {}", e))?;
+            .await
+            .map_err(|e| format!("DeepSeek call failed: {}", e))?;
 
         self.parse_evaluation(&response)
     }
@@ -610,15 +670,19 @@ IMPORTANT:
         force_dramatic_changes: bool,
     ) -> Result<Script, String> {
         let system_prompt = self.build_system_prompt();
-        let user_prompt = self.build_refinement_prompt(script, topic_brief, evaluation, force_dramatic_changes);
+        let user_prompt =
+            self.build_refinement_prompt(script, topic_brief, evaluation, force_dramatic_changes);
 
-        let response = self.llm_client.gemini_complete()
+        let response = self
+            .llm_client
+            .gemini_complete()
             .model("gemini-3-flash-preview")
             .system(&system_prompt)
             .user(&user_prompt)
             .temperature(temperature)
             .max_tokens(8000)
-            .await.map_err(|e| format!("Gemini refinement failed: {}", e))?;
+            .await
+            .map_err(|e| format!("Gemini refinement failed: {}", e))?;
 
         self.parse_script(&response, topic_brief.video_id)
     }
@@ -633,8 +697,10 @@ IMPORTANT:
         evaluation: &ScriptEvaluation,
     ) -> Option<i32> {
         let script_hash = Self::script_hash(script);
-        let criteria_json = serde_json::to_value(&evaluation.criteria).unwrap_or(serde_json::json!({}));
-        let improvements_json = serde_json::to_value(&evaluation.specific_improvements).unwrap_or(serde_json::json!([]));
+        let criteria_json =
+            serde_json::to_value(&evaluation.criteria).unwrap_or(serde_json::json!({}));
+        let improvements_json = serde_json::to_value(&evaluation.specific_improvements)
+            .unwrap_or(serde_json::json!([]));
         let script_json = serde_json::to_value(script).ok();
 
         match db::insert_script_evaluation(
@@ -650,7 +716,9 @@ IMPORTANT:
             &evaluation.ai_telltale_signs,
             improvements_json,
             script_json,
-        ).await {
+        )
+        .await
+        {
             Ok(id) => Some(id),
             Err(e) => {
                 warn!("Failed to persist evaluation: {}", e);
@@ -669,7 +737,10 @@ IMPORTANT:
         let script_json = match serde_json::to_value(script) {
             Ok(json) => json,
             Err(e) => {
-                warn!("ScriptWriter: Failed to serialize script for repository: {}", e);
+                warn!(
+                    "ScriptWriter: Failed to serialize script for repository: {}",
+                    e
+                );
                 return;
             }
         };
@@ -707,7 +778,10 @@ IMPORTANT:
         );
 
         // Phase 1: Generate initial candidates
-        info!("ScriptWriter: Generating {} candidates...", config.candidate_count);
+        info!(
+            "ScriptWriter: Generating {} candidates...",
+            config.candidate_count
+        );
         let mut candidates: Vec<Script> = Vec::new();
 
         for i in 0..config.candidate_count {
@@ -718,11 +792,19 @@ IMPORTANT:
 
             match self.generate_script(topic_brief).await {
                 Ok(script) => {
-                    info!("ScriptWriter: Candidate {} generated ({} words)", i + 1, script.full_text.split_whitespace().count());
+                    info!(
+                        "ScriptWriter: Candidate {} generated ({} words)",
+                        i + 1,
+                        script.full_text.split_whitespace().count()
+                    );
                     candidates.push(script);
                 }
                 Err(e) => {
-                    warn!("ScriptWriter: Failed to generate candidate {}: {}", i + 1, e);
+                    warn!(
+                        "ScriptWriter: Failed to generate candidate {}: {}",
+                        i + 1,
+                        e
+                    );
                 }
             }
         }
@@ -732,7 +814,10 @@ IMPORTANT:
         }
 
         // Phase 2: Evaluate all candidates
-        info!("ScriptWriter: Evaluating {} candidates...", candidates.len());
+        info!(
+            "ScriptWriter: Evaluating {} candidates...",
+            candidates.len()
+        );
         let mut best: Option<ScoredScript> = None;
 
         for (idx, script) in candidates.iter().enumerate() {
@@ -743,17 +828,14 @@ IMPORTANT:
 
             match self.evaluate_script(script, topic_brief).await {
                 Ok(evaluation) => {
-                    let eval_id = self.persist_evaluation(
-                        video_id,
-                        0,
-                        Some(idx as i32),
-                        script,
-                        &evaluation,
-                    ).await;
+                    let eval_id = self
+                        .persist_evaluation(video_id, 0, Some(idx as i32), script, &evaluation)
+                        .await;
 
                     info!(
                         "ScriptWriter: Candidate {} scored {:.1}",
-                        idx + 1, evaluation.overall_score
+                        idx + 1,
+                        evaluation.overall_score
                     );
 
                     let scored = ScoredScript {
@@ -764,12 +846,19 @@ IMPORTANT:
                         evaluation_id: eval_id,
                     };
 
-                    if best.is_none() || scored.evaluation.overall_score > best.as_ref().unwrap().evaluation.overall_score {
+                    if best.is_none()
+                        || scored.evaluation.overall_score
+                            > best.as_ref().unwrap().evaluation.overall_score
+                    {
                         best = Some(scored);
                     }
                 }
                 Err(e) => {
-                    warn!("ScriptWriter: Failed to evaluate candidate {}: {}", idx + 1, e);
+                    warn!(
+                        "ScriptWriter: Failed to evaluate candidate {}: {}",
+                        idx + 1,
+                        e
+                    );
                 }
             }
         }
@@ -795,40 +884,65 @@ IMPORTANT:
             iteration += 1;
 
             // Escalate temperature based on stagnation (0.6 -> 0.7 -> 0.8 -> 0.9 -> 1.0)
-            let temperature = (BASE_TEMPERATURE + (stagnant_iterations as f32 * 0.1)).min(MAX_TEMPERATURE);
-            
+            let temperature =
+                (BASE_TEMPERATURE + (stagnant_iterations as f32 * 0.1)).min(MAX_TEMPERATURE);
+
             // Force dramatic changes if we're halfway through the stagnation threshold
             let force_dramatic = stagnant_iterations >= (stagnation_threshold / 2).max(1);
 
             info!(
                 "ScriptWriter: Refinement {}/{} (score: {:.1}, temp: {:.1}, stagnant: {})",
-                iteration, config.max_iterations, best.evaluation.overall_score, temperature, stagnant_iterations
+                iteration,
+                config.max_iterations,
+                best.evaluation.overall_score,
+                temperature,
+                stagnant_iterations
             );
 
             // Log top issues being addressed
             if !best.evaluation.weaknesses.is_empty() {
-                info!("  Addressing: {}", best.evaluation.weaknesses.first().unwrap_or(&String::new()));
+                info!(
+                    "  Addressing: {}",
+                    best.evaluation.weaknesses.first().unwrap_or(&String::new())
+                );
             }
             if !best.evaluation.ai_telltale_signs.is_empty() {
-                info!("  AI pattern: {}", best.evaluation.ai_telltale_signs.first().unwrap_or(&String::new()));
+                info!(
+                    "  AI pattern: {}",
+                    best.evaluation
+                        .ai_telltale_signs
+                        .first()
+                        .unwrap_or(&String::new())
+                );
             }
             if force_dramatic {
                 info!("  Mode: DRAMATIC CHANGES (stagnation detected)");
             }
 
             // Refine based on feedback
-            match self.refine_script(&best.script, topic_brief, &best.evaluation, temperature, force_dramatic).await {
+            match self
+                .refine_script(
+                    &best.script,
+                    topic_brief,
+                    &best.evaluation,
+                    temperature,
+                    force_dramatic,
+                )
+                .await
+            {
                 Ok(refined_script) => {
                     // Evaluate refined script
                     match self.evaluate_script(&refined_script, topic_brief).await {
                         Ok(evaluation) => {
-                            let eval_id = self.persist_evaluation(
-                                video_id,
-                                iteration as i32,
-                                None,
-                                &refined_script,
-                                &evaluation,
-                            ).await;
+                            let eval_id = self
+                                .persist_evaluation(
+                                    video_id,
+                                    iteration as i32,
+                                    None,
+                                    &refined_script,
+                                    &evaluation,
+                                )
+                                .await;
 
                             // Only accept if it's actually better
                             if evaluation.overall_score > best.evaluation.overall_score {
@@ -899,7 +1013,8 @@ IMPORTANT:
             video_id,
             &best.script,
             Some(best.evaluation.overall_score),
-        ).await;
+        )
+        .await;
 
         Ok(best.script)
     }
@@ -910,11 +1025,8 @@ IMPORTANT:
         match self.generate_script(topic_brief).await {
             Ok(script) => {
                 // Save script to repository (no quality score since not evaluated)
-                self.save_to_scripts_repository(
-                    topic_brief.video_id,
-                    &script,
-                    None,
-                ).await;
+                self.save_to_scripts_repository(topic_brief.video_id, &script, None)
+                    .await;
                 Ok(script)
             }
             Err(e) => Err(e),
@@ -947,11 +1059,16 @@ impl AsyncNodeLogic for ScriptWriterLogic {
         // CASE 0: Bypass if manual script is provided
         if let Some(manual_script) = input.get("manual_script").filter(|v| !v.is_null()) {
             info!("ScriptWriter: Manual script detected, bypassing generation");
-            
+
             // Try to parse and save to repository in background
             if let (Some(_video_id_str), Ok(video_id)) = (
                 input.get("video_id").and_then(|v| v.as_str()),
-                input.get("video_id").and_then(|v| v.as_str()).map_or(Err("No video_id"), |s| uuid::Uuid::parse_str(s).map_err(|_| "Invalid video_id"))
+                input
+                    .get("video_id")
+                    .and_then(|v| v.as_str())
+                    .map_or(Err("No video_id"), |s| {
+                        uuid::Uuid::parse_str(s).map_err(|_| "Invalid video_id")
+                    }),
             ) {
                 if let Ok(script) = serde_json::from_value::<Script>(manual_script.clone()) {
                     let pool = self.db_pool.clone();
@@ -964,21 +1081,25 @@ impl AsyncNodeLogic for ScriptWriterLogic {
                                 return;
                             }
                         };
-                        
+
                         let topic = if !script.sections.is_empty() {
                             script.sections[0].title.clone()
                         } else {
                             script.hook.title.clone()
                         };
-                        
-                        match db::insert_script(&pool, Some(video_id), script_json, topic, None).await {
-                            Ok(id) => info!("ScriptWriter: Saved manual script {} to repository", id),
+
+                        match db::insert_script(&pool, Some(video_id), script_json, topic, None)
+                            .await
+                        {
+                            Ok(id) => {
+                                info!("ScriptWriter: Saved manual script {} to repository", id)
+                            }
                             Err(e) => warn!("ScriptWriter: Failed to save manual script: {}", e),
                         }
                     });
                 }
             }
-            
+
             return serde_json::json!({
                 "success": true,
                 "script": manual_script,
@@ -988,9 +1109,15 @@ impl AsyncNodeLogic for ScriptWriterLogic {
         }
 
         // CASE 1: Resume if script already exists
-        if let Some(existing_script) = input.get("script").and_then(|v| serde_json::from_value::<Script>(v.clone()).ok()) {
-            info!("ScriptWriter: Resuming with existing script for video {}", existing_script.video_id);
-            
+        if let Some(existing_script) = input
+            .get("script")
+            .and_then(|v| serde_json::from_value::<Script>(v.clone()).ok())
+        {
+            info!(
+                "ScriptWriter: Resuming with existing script for video {}",
+                existing_script.video_id
+            );
+
             // Save to repository in background (check for duplicates)
             let pool = self.db_pool.clone();
             let script = existing_script.clone();
@@ -1003,19 +1130,19 @@ impl AsyncNodeLogic for ScriptWriterLogic {
                         return;
                     }
                 };
-                
+
                 let topic = if !script.sections.is_empty() {
                     script.sections[0].title.clone()
                 } else {
                     script.hook.title.clone()
                 };
-                
+
                 match db::insert_script(&pool, Some(video_id), script_json, topic, None).await {
                     Ok(id) => info!("ScriptWriter: Saved resumed script {} to repository", id),
                     Err(e) => warn!("ScriptWriter: Failed to save resumed script: {}", e),
                 }
             });
-            
+
             return serde_json::json!({
                 "success": true,
                 "script": serde_json::to_value(&existing_script).unwrap(),
@@ -1041,7 +1168,10 @@ impl AsyncNodeLogic for ScriptWriterLogic {
             }
         };
 
-        info!("ScriptWriter: Generating script for '{}'", topic_brief.topic);
+        info!(
+            "ScriptWriter: Generating script for '{}'",
+            topic_brief.topic
+        );
 
         // Check if improvement loop is enabled
         let improvement_enabled = self.improvement_config.enabled
@@ -1086,7 +1216,8 @@ impl AsyncNodeLogic for ScriptWriterLogic {
             // Mark video as failed in database
             if let Some(vid) = shared.get(state_keys::VIDEO_ID).and_then(|v| v.as_str()) {
                 if let Ok(video_id) = uuid::Uuid::parse_str(vid) {
-                    let _ = db::mark_video_failed(&self.db_pool, video_id, "script_writer", error).await;
+                    let _ = db::mark_video_failed(&self.db_pool, video_id, "script_writer", error)
+                        .await;
                 }
             }
 
@@ -1094,12 +1225,20 @@ impl AsyncNodeLogic for ScriptWriterLogic {
         }
 
         // Handle resume bypass
-        if exec_res.get("is_resume").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if exec_res
+            .get("is_resume")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             return Some("default".to_string());
         }
 
         // Handle manual bypass
-        if exec_res.get("is_manual").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if exec_res
+            .get("is_manual")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             if let Some(vid) = exec_res.get("video_id").and_then(|v| v.as_str()) {
                 shared.insert(state_keys::VIDEO_ID.to_string(), serde_json::json!(vid));
             }
@@ -1117,7 +1256,8 @@ impl AsyncNodeLogic for ScriptWriterLogic {
             // Mark video as failed in database
             if let Some(vid) = shared.get(state_keys::VIDEO_ID).and_then(|v| v.as_str()) {
                 if let Ok(video_id) = uuid::Uuid::parse_str(vid) {
-                    let _ = db::mark_video_failed(&self.db_pool, video_id, "script_writer", error).await;
+                    let _ = db::mark_video_failed(&self.db_pool, video_id, "script_writer", error)
+                        .await;
                 }
             }
 
@@ -1164,7 +1304,9 @@ impl AsyncNodeLogic for ScriptWriterLogic {
             video_id,
             "script",
             serde_json::to_value(&script).unwrap_or(serde_json::json!(null)),
-        ).await {
+        )
+        .await
+        {
             error!("Failed to persist script to database: {}", e);
         }
 

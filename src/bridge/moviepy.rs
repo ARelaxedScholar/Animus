@@ -1,5 +1,5 @@
 //! MoviePy bridge utilities
-//! 
+//!
 //! The actual processing is done by the Python script at bridge/moviepy_bridge.py
 //! This module provides Rust utilities for interacting with it.
 

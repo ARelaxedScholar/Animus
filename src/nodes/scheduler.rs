@@ -15,6 +15,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::db;
+use crate::db::accounts;
 use crate::state_keys;
 
 /// Valid wisdom source focus values
@@ -103,18 +104,19 @@ impl SchedulerLogic {
             .unwrap()
             .and_utc();
 
-        let mut candidate = if preferred_weekdays.contains(&now.weekday()) && now < today_at_preferred {
-            // Today is a preferred day and we haven't passed the publish time yet
-            today_at_preferred
-        } else {
-            // Start from tomorrow at the preferred hour
-            now.date_naive()
-                .succ_opt()
-                .unwrap()
-                .and_hms_opt(self.config.preferred_hour_utc, 0, 0)
-                .unwrap()
-                .and_utc()
-        };
+        let mut candidate =
+            if preferred_weekdays.contains(&now.weekday()) && now < today_at_preferred {
+                // Today is a preferred day and we haven't passed the publish time yet
+                today_at_preferred
+            } else {
+                // Start from tomorrow at the preferred hour
+                now.date_naive()
+                    .succ_opt()
+                    .unwrap()
+                    .and_hms_opt(self.config.preferred_hour_utc, 0, 0)
+                    .unwrap()
+                    .and_utc()
+            };
 
         // If we have a last publish time, ensure minimum gap
         if let Some(last) = last_publish {
@@ -138,6 +140,32 @@ impl SchedulerLogic {
     /// Determine the wisdom source focus area for rotation
     fn select_source_focus(&self, video_number: u32) -> String {
         VALID_SOURCES[(video_number as usize) % VALID_SOURCES.len()].to_string()
+    }
+
+    /// Get an active YouTube account ID for the given source focus.
+    /// Returns Ok(account_id) if at least one active account exists.
+    /// Returns Err(error_message) if no active accounts or database error.
+    async fn get_active_account_id(&self, source_focus: &str) -> Result<i32, String> {
+        let accounts = accounts::list_active_accounts(&self.db_pool)
+            .await
+            .map_err(|e| format!("Failed to fetch YouTube accounts: {}", e))?;
+        
+        if accounts.is_empty() {
+            return Err("No active YouTube accounts configured. Use 'just auth-account' to add one.".to_string());
+        }
+
+        // Try to match by niche (case-insensitive)
+        let normalized_source = source_focus.to_lowercase();
+        for account in &accounts {
+            if let Some(ref niche) = account.niche {
+                if niche.to_lowercase() == normalized_source {
+                    return Ok(account.id);
+                }
+            }
+        }
+
+        // Fallback to first active account
+        Ok(accounts[0].id)
     }
 }
 
@@ -164,7 +192,10 @@ impl AsyncNodeLogic for SchedulerLogic {
         // CRITICAL FIX: If shared state is empty (daemon restarted), check the database
         if last_publish.is_none() {
             if let Ok(Some(db_last)) = db::get_latest_scheduled_time(&self.db_pool).await {
-                info!("Scheduler: Found latest scheduled video at {} in database", db_last);
+                info!(
+                    "Scheduler: Found latest scheduled video at {} in database",
+                    db_last
+                );
                 last_publish = Some(db_last);
             }
         }
@@ -205,24 +236,43 @@ impl AsyncNodeLogic for SchedulerLogic {
                 let path = entry.path();
                 if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
                     if let Ok(content) = tokio::fs::read_to_string(&path).await {
-                        if let Ok(manual_script) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Ok(manual_script) =
+                            serde_json::from_str::<serde_json::Value>(&content)
+                        {
                             info!("Scheduler: Found manual script at {:?}", path);
-                            
+
                             // Move file to 'processed' folder instead of deleting
-                            let dest_path = format!("manual_scripts/processed/{}", path.file_name().unwrap().to_str().unwrap());
+                            let dest_path = format!(
+                                "manual_scripts/processed/{}",
+                                path.file_name().unwrap().to_str().unwrap()
+                            );
                             let _ = tokio::fs::rename(&path, &dest_path).await;
 
-                            return serde_json::json!({
-                                "should_produce": true,
-                                "video_id": Uuid::new_v4().to_string(),
-                                "scheduled_publish": Utc::now().to_rfc3339(),
-                                "manual_script": manual_script,
-                                "source_focus": "Manual",
-                                "is_autonomous": false,
-                                "video_number": input.get("video_count").and_then(|v| v.as_u64()).unwrap_or(0) + 1,
-                                "hours_until_publish": 0,
-                                "consume_inputs": true
-                            });
+                            match self.get_active_account_id("Manual").await {
+                                Ok(account_id) => {
+                                    info!("Scheduler: Using YouTube account ID {} for manual script", account_id);
+                                    return serde_json::json!({
+                                        "should_produce": true,
+                                        "video_id": Uuid::new_v4().to_string(),
+                                        "scheduled_publish": Utc::now().to_rfc3339(),
+                                        "manual_script": manual_script,
+                                        "source_focus": "Manual",
+                                        "youtube_account_id": account_id,
+                                        "is_autonomous": false,
+                                        "video_number": input.get("video_count").and_then(|v| v.as_u64()).unwrap_or(0) + 1,
+                                        "hours_until_publish": 0,
+                                        "consume_inputs": true
+                                    });
+                                }
+                                Err(e) => {
+                                    warn!("Scheduler: Cannot produce manual script - {}", e);
+                                    return serde_json::json!({
+                                        "should_produce": false,
+                                        "reason": e,
+                                        "consume_inputs": true
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -306,25 +356,39 @@ impl AsyncNodeLogic for SchedulerLogic {
 
             // Not in progress - use the seed topic immediately
             // (Gap check removed to allow SEED_TOPIC to act as a true immediate override)
-            let source_focus = normalized_source
-                .unwrap_or_else(|| self.select_source_focus(video_count));
+            let source_focus =
+                normalized_source.unwrap_or_else(|| self.select_source_focus(video_count));
 
             info!(
                 "Scheduler: Using seed topic with source focus '{}'",
                 source_focus
             );
 
-            return serde_json::json!({
-                "should_produce": true,
-                "video_id": Uuid::new_v4().to_string(),
-                "scheduled_publish": Utc::now().to_rfc3339(),
-                "source_focus": source_focus,
-                "seed_topic": topic,
-                "is_autonomous": false,
-                "video_number": video_count + 1,
-                "hours_until_publish": 0,
-                "consume_inputs": true
-            });
+            match self.get_active_account_id(&source_focus).await {
+                Ok(account_id) => {
+                    info!("Scheduler: Using YouTube account ID {} for source focus '{}'", account_id, source_focus);
+                    return serde_json::json!({
+                        "should_produce": true,
+                        "video_id": Uuid::new_v4().to_string(),
+                        "scheduled_publish": Utc::now().to_rfc3339(),
+                        "source_focus": source_focus,
+                        "seed_topic": topic,
+                        "youtube_account_id": account_id,
+                        "is_autonomous": false,
+                        "video_number": video_count + 1,
+                        "hours_until_publish": 0,
+                        "consume_inputs": true
+                    });
+                }
+                Err(e) => {
+                    warn!("Scheduler: Cannot produce seed topic - {}", e);
+                    return serde_json::json!({
+                        "should_produce": false,
+                        "reason": e,
+                        "consume_inputs": true
+                    });
+                }
+            }
         }
 
         // CASE 2: No seed topic from env, but check the database queue
@@ -344,31 +408,51 @@ impl AsyncNodeLogic for SchedulerLogic {
                     }
                 }
 
-                let source_focus = queued_source
-                    .unwrap_or_else(|| self.select_source_focus(video_count));
+                let source_focus =
+                    queued_source.unwrap_or_else(|| self.select_source_focus(video_count));
 
                 info!(
                     "Scheduler: Using queued seed topic (id={}) with source focus '{}'",
                     id, source_focus
                 );
 
-                return serde_json::json!({
-                    "should_produce": true,
-                    "video_id": Uuid::new_v4().to_string(),
-                    "scheduled_publish": Utc::now().to_rfc3339(),
-                    "source_focus": source_focus,
-                    "seed_topic": queued_topic,
-                    "is_autonomous": false,
-                    "video_number": video_count + 1,
-                    "hours_until_publish": 0,
-                    "consume_inputs": false  // Already consumed from DB
-                });
+                match self.get_active_account_id(&source_focus).await {
+                    Ok(account_id) => {
+                        info!("Scheduler: Using YouTube account ID {} for queued seed (source focus '{}')", account_id, source_focus);
+                        return serde_json::json!({
+                            "should_produce": true,
+                            "video_id": Uuid::new_v4().to_string(),
+                            "scheduled_publish": Utc::now().to_rfc3339(),
+                            "source_focus": source_focus,
+                            "seed_topic": queued_topic,
+                            "youtube_account_id": account_id,
+                            "is_autonomous": false,
+                            "video_number": video_count + 1,
+                            "hours_until_publish": 0,
+                            "consume_inputs": false  // Already consumed from DB
+                        });
+                    }
+                    Err(e) => {
+                        warn!("Scheduler: Cannot produce queued seed topic - {}", e);
+                        return serde_json::json!({
+                            "should_produce": false,
+                            "reason": e,
+                            "consume_inputs": false
+                        });
+                    }
+                }
             }
         }
 
         // CASE 3: Production in progress, no seed topic
         if in_progress {
-            info!("Scheduler: Production in progress, resuming video {}", input.get("video_id").and_then(|v| v.as_str()).unwrap_or("unknown"));
+            info!(
+                "Scheduler: Production in progress, resuming video {}",
+                input
+                    .get("video_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+            );
             return serde_json::json!({
                 "should_produce": true,
                 "video_id": input.get("video_id"),
@@ -388,25 +472,55 @@ impl AsyncNodeLogic for SchedulerLogic {
         // We should start production if there's enough time
         // Assume production takes ~6 hours to allow for review (conservative)
         let production_lead_time_hours = 6;
-        let should_produce = hours_until <= production_lead_time_hours;
+        let should_produce_by_time = hours_until <= production_lead_time_hours;
 
-        if !should_produce {
+        if !should_produce_by_time {
             info!(
                 "Scheduler: Next video scheduled for {} ({} hours away). Lead time is {}h.",
                 next_publish, hours_until, production_lead_time_hours
             );
+            return serde_json::json!({
+                "should_produce": false,
+                "video_id": Uuid::new_v4().to_string(),
+                "scheduled_publish": next_publish.to_rfc3339(),
+                "source_focus": source_focus,
+                "video_number": video_count + 1,
+                "hours_until_publish": hours_until,
+                "is_autonomous": true,
+                "reason": "Next slot is too far in future"
+            });
         }
 
-        serde_json::json!({
-            "should_produce": should_produce,
-            "video_id": Uuid::new_v4().to_string(),
-            "scheduled_publish": next_publish.to_rfc3339(),
-            "source_focus": source_focus,
-            "video_number": video_count + 1,
-            "hours_until_publish": hours_until,
-            "is_autonomous": true,
-            "reason": if should_produce { "Scheduled time approaching" } else { "Next slot is too far in future" }
-        })
+        // Timing says we should produce - check for active YouTube account
+        match self.get_active_account_id(&source_focus).await {
+            Ok(account_id) => {
+                info!("Scheduler: Using YouTube account ID {} for scheduled video (source focus '{}')", account_id, source_focus);
+                serde_json::json!({
+                    "should_produce": true,
+                    "video_id": Uuid::new_v4().to_string(),
+                    "scheduled_publish": next_publish.to_rfc3339(),
+                    "source_focus": source_focus,
+                    "youtube_account_id": account_id,
+                    "video_number": video_count + 1,
+                    "hours_until_publish": hours_until,
+                    "is_autonomous": true,
+                    "reason": "Scheduled time approaching"
+                })
+            }
+            Err(e) => {
+                warn!("Scheduler: Cannot produce scheduled video - {}", e);
+                serde_json::json!({
+                    "should_produce": false,
+                    "video_id": Uuid::new_v4().to_string(),
+                    "scheduled_publish": next_publish.to_rfc3339(),
+                    "source_focus": source_focus,
+                    "video_number": video_count + 1,
+                    "hours_until_publish": hours_until,
+                    "is_autonomous": true,
+                    "reason": e
+                })
+            }
+        }
     }
 
     async fn post(
@@ -453,6 +567,10 @@ impl AsyncNodeLogic for SchedulerLogic {
 
         if let Some(source_focus) = exec_res.get("source_focus") {
             shared.insert("source_focus".to_string(), source_focus.clone());
+        }
+
+        if let Some(account_id) = exec_res.get("youtube_account_id") {
+            shared.insert("youtube_account_id".to_string(), account_id.clone());
         }
 
         if let Some(is_autonomous) = exec_res.get("is_autonomous") {
@@ -520,8 +638,14 @@ mod tests {
         // Valid inputs (case insensitive)
         assert_eq!(normalize_source_focus("Bible"), Some("Bible".to_string()));
         assert_eq!(normalize_source_focus("bible"), Some("Bible".to_string()));
-        assert_eq!(normalize_source_focus("STOICISM"), Some("Stoicism".to_string()));
-        assert_eq!(normalize_source_focus("  Philosophy  "), Some("Philosophy".to_string()));
+        assert_eq!(
+            normalize_source_focus("STOICISM"),
+            Some("Stoicism".to_string())
+        );
+        assert_eq!(
+            normalize_source_focus("  Philosophy  "),
+            Some("Philosophy".to_string())
+        );
 
         // Invalid inputs
         assert_eq!(normalize_source_focus("Christianity"), None);

@@ -3,8 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
-use uuid::Uuid;
 use std::str::FromStr;
+use uuid::Uuid;
 
 /// Video production status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,7 +62,6 @@ pub struct Video {
     pub thumbnail_path: Option<String>,
     pub youtube_id: Option<String>,
     pub youtube_url: Option<String>,
-    #[sqlx(skip)]
     pub youtube_account_id: Option<i32>,
     pub scheduled_at: Option<DateTime<Utc>>,
     pub published_at: Option<DateTime<Utc>>,

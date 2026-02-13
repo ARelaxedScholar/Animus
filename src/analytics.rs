@@ -3,28 +3,31 @@
 //! Periodically calls the Python analytics worker to update metrics
 //! for published videos and maintain channel baselines.
 
+use sqlx::PgPool;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use sqlx::PgPool;
 use tokio::process::Command;
 use tracing::{debug, error, info};
 
 /// Background task that runs analytics updates periodically
 pub async fn start_analytics_worker(_db_pool: Arc<PgPool>, interval_hours: u64) {
-    info!("Starting background analytics worker (interval: {} hours)", interval_hours);
-    
-    let python_executable = std::env::var("PYTHON_EXECUTABLE")
-        .unwrap_or_else(|_| "python3".to_string());
-    
+    info!(
+        "Starting background analytics worker (interval: {} hours)",
+        interval_hours
+    );
+
+    let python_executable =
+        std::env::var("PYTHON_EXECUTABLE").unwrap_or_else(|_| "python3".to_string());
+
     let script_path = "scripts/analytics_worker.py";
-    
+
     // Initial delay to let the daemon settle
     tokio::time::sleep(Duration::from_secs(60)).await;
 
     loop {
         info!("Running scheduled analytics update...");
-        
+
         match Command::new(&python_executable)
             .arg(script_path)
             .stdout(Stdio::piped())

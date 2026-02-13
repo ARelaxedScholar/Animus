@@ -23,9 +23,30 @@ download-models:
     curl -L https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json -o models/en_US-lessac-medium.onnx.json
     @echo "Models downloaded successfully."
 
-# Authenticate a new YouTube account
+# Authenticate a new YouTube account (Rust binary - may have OAuth issues)
 auth-account name niche *args:
-    cargo run --bin auth-helper -- --name "{{name}}" --niche "{{niche}}" {{args}}
+    @echo "⚠️  Rust OAuth binary may have scope errors. Use 'just add-account' instead."
+    cargo run --bin auth_helper -- --name "{{name}}" --niche "{{niche}}" {{args}}
+
+# Add YouTube account using Python OAuth (works!)
+add-account name niche:
+    @echo "Adding YouTube account '{{name}}' with niche '{{niche}}'..."
+    @python scripts/add_youtube_account.py "{{name}}" "{{niche}}"
+
+# List YouTube accounts in database
+list-accounts:
+    @docker-compose exec postgres psql -U animus -d animus -c "SELECT id, name, niche, is_active FROM youtube_accounts ORDER BY id;"
+
+# Update an existing account's refresh token (manual)
+update-account-refresh name refresh_token:
+    @echo "Updating refresh token for account '{{name}}'..."
+    @docker-compose exec postgres psql -U animus -d animus -c "UPDATE youtube_accounts SET refresh_token = '{{refresh_token}}', updated_at = NOW() WHERE name = '{{name}}';"
+    @echo "Done."
+
+# Test YouTube account credentials from .env
+test-account:
+    @echo "Testing YouTube credentials from .env..."
+    @python scripts/test_youtube_token.py
 
 # Create a new migration
 migration name:

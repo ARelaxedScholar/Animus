@@ -41,6 +41,7 @@
             google-api-python-client
             psycopg2
             python-dotenv
+            psutil
           ]
         );
 

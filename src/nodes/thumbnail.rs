@@ -35,7 +35,8 @@ impl Default for ThumbnailConfig {
             template_dir: "templates/thumbnails".to_string(),
             width: 1280,
             height: 720,
-            prompt_prefix: "A high-quality, cinematic YouTube thumbnail for a video titled:".to_string(),
+            prompt_prefix: "A high-quality, cinematic YouTube thumbnail for a video titled:"
+                .to_string(),
         }
     }
 }
@@ -91,7 +92,7 @@ impl ThumbnailLogic {
 
         // Create a gradient background
         let mut img = RgbImage::new(width, height);
-        
+
         for y in 0..height {
             for x in 0..width {
                 // Dark blue to purple gradient
@@ -121,9 +122,15 @@ impl AsyncNodeLogic for ThumbnailLogic {
         _params: &HashMap<String, NodeValue>,
         shared: &HashMap<String, NodeValue>,
     ) -> NodeValue {
-        let topic_brief = shared.get(state_keys::TOPIC_BRIEF).cloned().unwrap_or(serde_json::json!(null));
-        let video_id = shared.get(state_keys::VIDEO_ID).cloned().unwrap_or(serde_json::json!(null));
-        
+        let topic_brief = shared
+            .get(state_keys::TOPIC_BRIEF)
+            .cloned()
+            .unwrap_or(serde_json::json!(null));
+        let video_id = shared
+            .get(state_keys::VIDEO_ID)
+            .cloned()
+            .unwrap_or(serde_json::json!(null));
+
         serde_json::json!({
             "topic_brief": topic_brief,
             "video_id": video_id
@@ -131,12 +138,14 @@ impl AsyncNodeLogic for ThumbnailLogic {
     }
 
     async fn exec(&self, input: NodeValue) -> NodeValue {
-        let video_id = input.get("video_id")
+        let video_id = input
+            .get("video_id")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
 
-        let topic_brief: Option<TopicBrief> = input.get("topic_brief")
+        let topic_brief: Option<TopicBrief> = input
+            .get("topic_brief")
             .and_then(|v| serde_json::from_value(v.clone()).ok());
 
         let title = topic_brief
@@ -153,14 +162,20 @@ impl AsyncNodeLogic for ThumbnailLogic {
                 error!("Thumbnail: Imagen failed, falling back: {}", e);
                 match self.generate_simple_thumbnail(&title, &video_id).await {
                     Ok(bytes) => bytes,
-                    Err(e) => return serde_json::json!({ "error": format!("Thumbnail generation failed: {}", e) }),
+                    Err(e) => {
+                        return serde_json::json!({ "error": format!("Thumbnail generation failed: {}", e) })
+                    }
                 }
             }
         };
 
         // Upload to S3
         let thumbnail_path = format!("thumbnails/{}/thumbnail.png", video_id);
-        if let Err(e) = self.s3_client.upload_bytes(&thumbnail_path, thumbnail_bytes, "image/png").await {
+        if let Err(e) = self
+            .s3_client
+            .upload_bytes(&thumbnail_path, thumbnail_bytes, "image/png")
+            .await
+        {
             return serde_json::json!({ "error": format!("Failed to upload thumbnail: {}", e) });
         }
 
@@ -180,21 +195,22 @@ impl AsyncNodeLogic for ThumbnailLogic {
         if let Some(error) = exec_res.get("error").and_then(|v| v.as_str()) {
             error!("Thumbnail generation failed: {}", error);
             shared.insert(state_keys::ERROR.to_string(), serde_json::json!(error));
-            
+
             // Mark video as failed in database
             if let Some(vid) = shared.get(state_keys::VIDEO_ID).and_then(|v| v.as_str()) {
                 if let Ok(video_id) = uuid::Uuid::parse_str(vid) {
-                    let _ = db::mark_video_failed(&self.db_pool, video_id, "thumbnail", error).await;
+                    let _ =
+                        db::mark_video_failed(&self.db_pool, video_id, "thumbnail", error).await;
                 }
             }
-            
+
             return Some("error".to_string());
         }
 
         if let Some(path) = exec_res.get("thumbnail_path") {
             shared.insert(state_keys::THUMBNAIL_PATH.to_string(), path.clone());
             info!("Thumbnail: Generated successfully");
-            
+
             // Persist thumbnail_path to database
             if let Some(vid) = exec_res.get("video_id").and_then(|v| v.as_str()) {
                 if let Ok(video_id) = uuid::Uuid::parse_str(vid) {
@@ -204,7 +220,9 @@ impl AsyncNodeLogic for ThumbnailLogic {
                             video_id,
                             "thumbnail_path",
                             path_str,
-                        ).await {
+                        )
+                        .await
+                        {
                             error!("Failed to persist thumbnail_path to database: {}", e);
                         }
                     }

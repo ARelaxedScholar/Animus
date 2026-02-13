@@ -15,9 +15,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Header/tabs
-            Constraint::Min(0),     // Main content
-            Constraint::Length(3),  // Footer/status
+            Constraint::Length(3), // Header/tabs
+            Constraint::Min(0),    // Main content
+            Constraint::Length(3), // Footer/status
         ])
         .split(frame.size());
 
@@ -31,23 +31,35 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|t| {
             let style = if *t == app.active_tab {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
             Line::from(vec![
-                Span::styled(format!("{} ", t.key()), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{} ", t.key()),
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Span::styled(t.title(), style),
             ])
         })
         .collect();
 
     let tabs = Tabs::new(titles)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .title(" Animus Dashboard "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Animus Dashboard "),
+        )
         .highlight_style(Style::default().fg(Color::Yellow))
-        .select(Tab::all().iter().position(|t| *t == app.active_tab).unwrap_or(0));
+        .select(
+            Tab::all()
+                .iter()
+                .position(|t| *t == app.active_tab)
+                .unwrap_or(0),
+        );
 
     frame.render_widget(tabs, area);
 }
@@ -64,29 +76,58 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let connection_status = if app.connected {
-        Span::styled(" CONNECTED ", Style::default().bg(Color::Green).fg(Color::Black))
+        Span::styled(
+            " CONNECTED ",
+            Style::default().bg(Color::Green).fg(Color::Black),
+        )
     } else {
-        Span::styled(" DISCONNECTED ", Style::default().bg(Color::Red).fg(Color::White))
+        Span::styled(
+            " DISCONNECTED ",
+            Style::default().bg(Color::Red).fg(Color::White),
+        )
     };
 
     let daemon_status = if app.status.paused {
-        Span::styled(" PAUSED ", Style::default().bg(Color::Yellow).fg(Color::Black))
+        Span::styled(
+            " PAUSED ",
+            Style::default().bg(Color::Yellow).fg(Color::Black),
+        )
     } else if app.status.running {
-        Span::styled(" RUNNING ", Style::default().bg(Color::Blue).fg(Color::White))
+        Span::styled(
+            " RUNNING ",
+            Style::default().bg(Color::Blue).fg(Color::White),
+        )
     } else {
-        Span::styled(" STOPPED ", Style::default().bg(Color::DarkGray).fg(Color::White))
+        Span::styled(
+            " STOPPED ",
+            Style::default().bg(Color::DarkGray).fg(Color::White),
+        )
     };
 
     let busy_indicator = if app.busy {
-        Span::styled(" BUSY ", Style::default().bg(Color::Magenta).fg(Color::White))
+        Span::styled(
+            " BUSY ",
+            Style::default().bg(Color::Magenta).fg(Color::White),
+        )
     } else {
         Span::raw("")
     };
 
-    let last_log = app.activity_log.last().map(|s| {
-        let content = if s.len() > 50 { format!("{}...", &s[..47]) } else { s.clone() };
-        Span::styled(format!(" | Last: {}", content), Style::default().fg(Color::Cyan))
-    }).unwrap_or_else(|| Span::raw(""));
+    let last_log = app
+        .activity_log
+        .last()
+        .map(|s| {
+            let content = if s.len() > 50 {
+                format!("{}...", &s[..47])
+            } else {
+                s.clone()
+            };
+            Span::styled(
+                format!(" | Last: {}", content),
+                Style::default().fg(Color::Cyan),
+            )
+        })
+        .unwrap_or_else(|| Span::raw(""));
 
     let help = match app.active_tab {
         Tab::Dashboard => "r: refresh | Tab: next tab | q: quit",
@@ -145,7 +186,9 @@ fn render_dashboard(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::raw("Next Scheduled: "),
             Span::styled(
-                app.status.next_scheduled_video.as_deref()
+                app.status
+                    .next_scheduled_video
+                    .as_deref()
                     .map(|s| s.split('T').next().unwrap_or(s))
                     .unwrap_or("-"),
                 Style::default().fg(Color::Green),
@@ -160,20 +203,27 @@ fn render_dashboard(frame: &mut Frame, app: &App, area: Rect) {
         ]),
     ];
 
-    let status = Paragraph::new(status_text)
-        .block(Block::default().borders(Borders::ALL).title(" Current Status "));
+    let status = Paragraph::new(status_text).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Current Status "),
+    );
     frame.render_widget(status, left_chunks[0]);
 
     // Activity log
-    let log_items: Vec<ListItem> = app.activity_log
+    let log_items: Vec<ListItem> = app
+        .activity_log
         .iter()
         .rev()
         .take(20)
         .map(|s| ListItem::new(s.as_str()))
         .collect();
 
-    let log = List::new(log_items)
-        .block(Block::default().borders(Borders::ALL).title(" Activity Log "));
+    let log = List::new(log_items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Activity Log "),
+    );
     frame.render_widget(log, left_chunks[1]);
 
     // Stats panel
@@ -185,30 +235,49 @@ fn render_dashboard(frame: &mut Frame, app: &App, area: Rect) {
     let stats_text = vec![
         Line::from(vec![
             Span::raw("Total Videos:   "),
-            Span::styled(app.stats.total_videos.to_string(), Style::default().fg(Color::White)),
+            Span::styled(
+                app.stats.total_videos.to_string(),
+                Style::default().fg(Color::White),
+            ),
         ]),
         Line::from(vec![
             Span::raw("Published:      "),
-            Span::styled(app.stats.published.to_string(), Style::default().fg(Color::Green)),
+            Span::styled(
+                app.stats.published.to_string(),
+                Style::default().fg(Color::Green),
+            ),
         ]),
         Line::from(vec![
             Span::raw("Failed:         "),
-            Span::styled(app.stats.failed.to_string(), Style::default().fg(Color::Red)),
+            Span::styled(
+                app.stats.failed.to_string(),
+                Style::default().fg(Color::Red),
+            ),
         ]),
         Line::from(vec![
             Span::raw("Producing:      "),
-            Span::styled(app.stats.producing.to_string(), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                app.stats.producing.to_string(),
+                Style::default().fg(Color::Yellow),
+            ),
         ]),
         Line::from(vec![
             Span::raw("Queue Length:   "),
-            Span::styled(app.stats.queue_length.to_string(), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                app.stats.queue_length.to_string(),
+                Style::default().fg(Color::Cyan),
+            ),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::raw("Success Rate:   "),
             Span::styled(
                 format!("{:.1}%", app.stats.success_rate),
-                Style::default().fg(if app.stats.success_rate > 50.0 { Color::Green } else { Color::Red }),
+                Style::default().fg(if app.stats.success_rate > 50.0 {
+                    Color::Green
+                } else {
+                    Color::Red
+                }),
             ),
         ]),
     ];
@@ -218,7 +287,9 @@ fn render_dashboard(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(stats, right_chunks[0]);
 
     // Failure breakdown
-    let failure_rows: Vec<Row> = app.stats.recent_failures
+    let failure_rows: Vec<Row> = app
+        .stats
+        .recent_failures
         .iter()
         .map(|f| {
             Row::new(vec![
@@ -233,7 +304,11 @@ fn render_dashboard(frame: &mut Frame, app: &App, area: Rect) {
         [Constraint::Percentage(70), Constraint::Percentage(30)],
     )
     .header(Row::new(vec!["Stage", "Count"]).style(Style::default().add_modifier(Modifier::BOLD)))
-    .block(Block::default().borders(Borders::ALL).title(" Failure Breakdown "));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Failure Breakdown "),
+    );
 
     frame.render_widget(failures, right_chunks[1]);
 }
@@ -248,7 +323,8 @@ fn render_videos(frame: &mut Frame, app: &App, area: Rect) {
         Some(f) => f.to_string(),
     };
 
-    let rows: Vec<Row> = app.videos
+    let rows: Vec<Row> = app
+        .videos
         .iter()
         .enumerate()
         .map(|(i, v)| {
@@ -269,7 +345,13 @@ fn render_videos(frame: &mut Frame, app: &App, area: Rect) {
                 Cell::from(v.id.chars().take(8).collect::<String>()),
                 Cell::from(v.status.clone()).style(status_style),
                 Cell::from(v.title.clone().unwrap_or_else(|| "-".to_string())),
-                Cell::from(v.created_at.split('T').next().unwrap_or(&v.created_at).to_string()),
+                Cell::from(
+                    v.created_at
+                        .split('T')
+                        .next()
+                        .unwrap_or(&v.created_at)
+                        .to_string(),
+                ),
             ])
             .style(style)
         })
@@ -288,9 +370,10 @@ fn render_videos(frame: &mut Frame, app: &App, area: Rect) {
         Row::new(vec!["ID", "Status", "Title", "Created"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
-    .block(Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" Videos ({}) [f: filter, d: download] ", filter_text)));
+    .block(Block::default().borders(Borders::ALL).title(format!(
+        " Videos ({}) [f: filter, d: download] ",
+        filter_text
+    )));
 
     frame.render_widget(table, area);
 }
@@ -306,7 +389,8 @@ fn render_queue(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // Queue list
-    let rows: Vec<Row> = app.queue
+    let rows: Vec<Row> = app
+        .queue
         .iter()
         .enumerate()
         .map(|(i, item)| {
@@ -337,9 +421,11 @@ fn render_queue(frame: &mut Frame, app: &App, area: Rect) {
         Row::new(vec!["ID", "Topic", "Source"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
-    .block(Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" Seed Queue ({} items) ", app.queue.len())));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Seed Queue ({} items) ", app.queue.len())),
+    );
 
     frame.render_widget(table, chunks[0]);
 
@@ -383,11 +469,12 @@ fn render_queue(frame: &mut Frame, app: &App, area: Rect) {
         ]),
     ];
 
-    let input_block = Paragraph::new(input_text)
-        .block(Block::default()
+    let input_block = Paragraph::new(input_text).block(
+        Block::default()
             .borders(Borders::ALL)
             .title(" Add Topic (a: start, Enter: submit, Esc: cancel, Tab: switch field) ")
-            .border_style(input_style));
+            .border_style(input_style),
+    );
 
     frame.render_widget(input_block, chunks[1]);
 }
@@ -403,7 +490,8 @@ fn render_retry(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // Retryable videos list
-    let rows: Vec<Row> = app.retry_videos
+    let rows: Vec<Row> = app
+        .retry_videos
         .iter()
         .enumerate()
         .map(|(i, v)| {
@@ -416,7 +504,14 @@ fn render_retry(frame: &mut Frame, app: &App, area: Rect) {
             Row::new(vec![
                 Cell::from(v.id.chars().take(8).collect::<String>()),
                 Cell::from(v.title.clone().unwrap_or_else(|| "-".to_string())),
-                Cell::from(v.error_message.clone().unwrap_or_else(|| "-".to_string()).chars().take(50).collect::<String>()),
+                Cell::from(
+                    v.error_message
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string())
+                        .chars()
+                        .take(50)
+                        .collect::<String>(),
+                ),
             ])
             .style(style)
         })
@@ -431,31 +526,44 @@ fn render_retry(frame: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(
-        Row::new(vec!["ID", "Title", "Error"])
-            .style(Style::default().add_modifier(Modifier::BOLD)),
+        Row::new(vec!["ID", "Title", "Error"]).style(Style::default().add_modifier(Modifier::BOLD)),
     )
-    .block(Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" Videos Failed at Publisher ({}) - Press Enter to retry ", app.retry_videos.len())));
+    .block(Block::default().borders(Borders::ALL).title(format!(
+        " Videos Failed at Publisher ({}) - Press Enter to retry ",
+        app.retry_videos.len()
+    )));
 
     frame.render_widget(table, chunks[0]);
 
     // Result panel
     let result_text = if app.retry_in_progress {
-        vec![Line::from(Span::styled("Retrying upload...", Style::default().fg(Color::Yellow)))]
+        vec![Line::from(Span::styled(
+            "Retrying upload...",
+            Style::default().fg(Color::Yellow),
+        ))]
     } else {
         match &app.retry_result {
             Some(Ok(url)) => vec![Line::from(vec![
                 Span::styled("Success! ", Style::default().fg(Color::Green)),
                 Span::raw(url),
             ])],
-            Some(Err(e)) => vec![Line::from(Span::styled(format!("Error: {}", e), Style::default().fg(Color::Red)))],
-            None => vec![Line::from(Span::styled("Select a video and press Enter to retry", Style::default().fg(Color::DarkGray)))],
+            Some(Err(e)) => vec![Line::from(Span::styled(
+                format!("Error: {}", e),
+                Style::default().fg(Color::Red),
+            ))],
+            None => vec![Line::from(Span::styled(
+                "Select a video and press Enter to retry",
+                Style::default().fg(Color::DarkGray),
+            ))],
         }
     };
 
     let result = Paragraph::new(result_text)
-        .block(Block::default().borders(Borders::ALL).title(" Retry Result "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Retry Result "),
+        )
         .wrap(Wrap { trim: true });
 
     frame.render_widget(result, chunks[1]);
@@ -491,29 +599,52 @@ fn render_settings(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::raw("  Daemon Status:  "),
-            Span::styled(status_text, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                status_text,
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::raw("  Videos Produced: "),
-            Span::styled(app.status.videos_produced.to_string(), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                app.status.videos_produced.to_string(),
+                Style::default().fg(Color::Cyan),
+            ),
         ]),
         Line::from(""),
-        Line::from(Span::styled("  [p] Toggle Pause/Resume", Style::default().fg(Color::White))),
-        Line::from(Span::styled("  [s] Shutdown Daemon", Style::default().fg(Color::Red))),
+        Line::from(Span::styled(
+            "  [p] Toggle Pause/Resume",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "  [s] Shutdown Daemon",
+            Style::default().fg(Color::Red),
+        )),
         Line::from(""),
     ];
 
-    let settings = Paragraph::new(settings_text)
-        .block(Block::default().borders(Borders::ALL).title(" Daemon Control "));
+    let settings = Paragraph::new(settings_text).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Daemon Control "),
+    );
 
     frame.render_widget(settings, chunks[0]);
 
     // Last error
     let error_text = if let Some(ref err) = app.status.last_error {
-        vec![Line::from(Span::styled(err, Style::default().fg(Color::Red)))]
+        vec![Line::from(Span::styled(
+            err,
+            Style::default().fg(Color::Red),
+        ))]
     } else {
-        vec![Line::from(Span::styled("No recent errors", Style::default().fg(Color::DarkGray)))]
+        vec![Line::from(Span::styled(
+            "No recent errors",
+            Style::default().fg(Color::DarkGray),
+        ))]
     };
 
     let errors = Paragraph::new(error_text)

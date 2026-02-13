@@ -37,7 +37,7 @@ impl Default for PublisherConfig {
     fn default() -> Self {
         Self {
             default_account_id: None,
-            default_category_id: "27".to_string(), // Education
+            default_category_id: "27".to_string(),  // Education
             default_privacy: "private".to_string(), // Start private for review
             client_id: String::new(),
             client_secret: String::new(),
@@ -93,15 +93,16 @@ impl PublisherLogic {
     /// Downloads from S3 and re-uploads to YouTube.
     pub async fn retry_publish(&self, video_id: uuid::Uuid) -> Result<String, String> {
         info!("Publisher: Retrying upload for video {}", video_id);
-        
+
         // Get video from database
         let video = db::get_video(&self.db_pool, video_id)
             .await
             .map_err(|e| format!("Database error: {}", e))?
             .ok_or_else(|| "Video not found".to_string())?;
-        
+
         // Find which account to use
-        let account_id = video.youtube_account_id
+        let account_id = video
+            .youtube_account_id
             .or(self.config.default_account_id)
             .ok_or_else(|| "No YouTube account associated with this video".to_string())?;
 
@@ -111,41 +112,55 @@ impl PublisherLogic {
             .ok_or_else(|| format!("Account {} not found", account_id))?;
 
         // Check if it has a video path
-        let video_path = video.video_path
+        let video_path = video
+            .video_path
             .ok_or_else(|| "Video has no S3 path - not yet assembled".to_string())?;
-        
+
         // Get SEO metadata
-        let seo_metadata: SEOMetadata = video.seo_metadata
+        let seo_metadata: SEOMetadata = video
+            .seo_metadata
             .ok_or_else(|| "No SEO metadata".to_string())
-            .and_then(|v| serde_json::from_value(v).map_err(|e| format!("Invalid SEO metadata: {}", e)))?;
-        
+            .and_then(|v| {
+                serde_json::from_value(v).map_err(|e| format!("Invalid SEO metadata: {}", e))
+            })?;
+
         // Get access token
-        let access_token = self.get_access_token(&account).await
+        let access_token = self
+            .get_access_token(&account)
+            .await
             .map_err(|e| format!("Failed to get access token: {}", e))?;
-        
+
         // Download video from S3
         info!("Publisher: Downloading video from S3...");
-        let video_data = self.s3_client.download_bytes(&video_path).await
+        let video_data = self
+            .s3_client
+            .download_bytes(&video_path)
+            .await
             .map_err(|e| format!("Failed to download video: {}", e))?;
         info!("Publisher: Downloaded {} bytes", video_data.len());
-        
+
         // Upload to YouTube
         info!("Publisher: Uploading to YouTube - '{}'", seo_metadata.title);
-        let youtube_video_id = self.upload_video(
-            &account,
-            &access_token,
-            video_data,
-            &seo_metadata,
-            video.scheduled_at,
-        ).await
+        let youtube_video_id = self
+            .upload_video(
+                &account,
+                &access_token,
+                video_data,
+                &seo_metadata,
+                video.scheduled_at,
+            )
+            .await
             .map_err(|e| format!("YouTube upload failed: {}", e))?;
-        
+
         let youtube_url = format!("https://www.youtube.com/watch?v={}", youtube_video_id);
-        
+
         // Upload thumbnail if available
         if let Some(thumb_path) = video.thumbnail_path {
             if let Ok(thumb_data) = self.s3_client.download_bytes(&thumb_path).await {
-                match self.set_thumbnail(&access_token, &youtube_video_id, thumb_data).await {
+                match self
+                    .set_thumbnail(&access_token, &youtube_video_id, thumb_data)
+                    .await
+                {
                     Ok(_) => info!("Publisher: Custom thumbnail uploaded successfully"),
                     Err(e) if e.contains("PERMISSION_DENIED") => {
                         warn!("Publisher: {}", e);
@@ -156,19 +171,23 @@ impl PublisherLogic {
                 }
             }
         }
-        
+
         // Mark as published in database
         db::mark_video_published(&self.db_pool, video_id, &youtube_video_id, &youtube_url)
             .await
             .map_err(|e| format!("Failed to update database: {}", e))?;
-        
+
         info!("Publisher: Retry successful! URL: {}", youtube_url);
         Ok(youtube_url)
     }
 
     /// Refresh the OAuth access token
-    async fn get_access_token(&self, account: &db::accounts::YouTubeAccount) -> Result<String, String> {
-        let response = self.http_client
+    async fn get_access_token(
+        &self,
+        account: &db::accounts::YouTubeAccount,
+    ) -> Result<String, String> {
+        let response = self
+            .http_client
             .post("https://oauth2.googleapis.com/token")
             .form(&[
                 ("client_id", &account.client_id),
@@ -185,7 +204,9 @@ impl PublisherLogic {
             return Err(format!("Token refresh error: {}", error_text));
         }
 
-        let token_response: TokenResponse = response.json().await
+        let token_response: TokenResponse = response
+            .json()
+            .await
             .map_err(|e| format!("Failed to parse token response: {}", e))?;
 
         Ok(token_response.access_token)
@@ -221,12 +242,10 @@ impl PublisherLogic {
         });
 
         // Initiate resumable upload
-        let init_response = self.http_client
+        let init_response = self
+            .http_client
             .post("https://www.googleapis.com/upload/youtube/v3/videos")
-            .query(&[
-                ("uploadType", "resumable"),
-                ("part", "snippet,status"),
-            ])
+            .query(&[("uploadType", "resumable"), ("part", "snippet,status")])
             .header("Authorization", format!("Bearer {}", access_token))
             .header("Content-Type", "application/json")
             .header("X-Upload-Content-Type", "video/mp4")
@@ -249,7 +268,8 @@ impl PublisherLogic {
             .to_string();
 
         // Upload the video data
-        let upload_response = self.http_client
+        let upload_response = self
+            .http_client
             .put(&upload_url)
             .header("Content-Type", "video/mp4")
             .header("Content-Length", video_data.len().to_string())
@@ -263,7 +283,9 @@ impl PublisherLogic {
             return Err(format!("Video upload error: {}", error));
         }
 
-        let youtube_response: YouTubeVideoResponse = upload_response.json().await
+        let youtube_response: YouTubeVideoResponse = upload_response
+            .json()
+            .await
             .map_err(|e| format!("Failed to parse upload response: {}", e))?;
 
         Ok(youtube_response.id)
@@ -276,7 +298,8 @@ impl PublisherLogic {
         video_id: &str,
         thumbnail_data: Vec<u8>,
     ) -> Result<(), String> {
-        let response = self.http_client
+        let response = self
+            .http_client
             .post("https://www.googleapis.com/upload/youtube/v3/thumbnails/set")
             .query(&[("videoId", video_id)])
             .header("Authorization", format!("Bearer {}", access_token))
@@ -289,11 +312,11 @@ impl PublisherLogic {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            
+
             if status == reqwest::StatusCode::FORBIDDEN && error_text.contains("thumbnail") {
                 return Err("PERMISSION_DENIED: Custom thumbnails are not enabled for this account. Visit youtube.com/verify to fix this.".to_string());
             }
-            
+
             return Err(format!("Thumbnail upload error {}: {}", status, error_text));
         }
 
@@ -308,9 +331,18 @@ impl AsyncNodeLogic for PublisherLogic {
         _params: &HashMap<String, NodeValue>,
         shared: &HashMap<String, NodeValue>,
     ) -> NodeValue {
-        let video_path = shared.get(state_keys::VIDEO_PATH).cloned().unwrap_or(serde_json::json!(null));
-        let thumbnail_path = shared.get(state_keys::THUMBNAIL_PATH).cloned().unwrap_or(serde_json::json!(null));
-        let seo_metadata = shared.get(state_keys::SEO_METADATA).cloned().unwrap_or(serde_json::json!(null));
+        let video_path = shared
+            .get(state_keys::VIDEO_PATH)
+            .cloned()
+            .unwrap_or(serde_json::json!(null));
+        let thumbnail_path = shared
+            .get(state_keys::THUMBNAIL_PATH)
+            .cloned()
+            .unwrap_or(serde_json::json!(null));
+        let seo_metadata = shared
+            .get(state_keys::SEO_METADATA)
+            .cloned()
+            .unwrap_or(serde_json::json!(null));
         let scheduled_publish = shared.get("scheduled_publish").cloned();
         let youtube_account_id = shared.get("youtube_account_id").cloned();
 
@@ -325,9 +357,13 @@ impl AsyncNodeLogic for PublisherLogic {
     }
 
     async fn exec(&self, input: NodeValue) -> NodeValue {
-        let is_autonomous = input.get("is_autonomous").and_then(|v| v.as_bool()).unwrap_or(true);
-        
-        let account_id = input.get("youtube_account_id")
+        let is_autonomous = input
+            .get("is_autonomous")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let account_id = input
+            .get("youtube_account_id")
             .and_then(|v| v.as_i64())
             .map(|id| id as i32)
             .or(self.config.default_account_id)
@@ -341,7 +377,9 @@ impl AsyncNodeLogic for PublisherLogic {
         // Fetch account from DB
         let account = match db::accounts::get_account(&self.db_pool, account_id).await {
             Ok(Some(a)) => a,
-            Ok(None) => return serde_json::json!({ "error": format!("Account {} not found", account_id) }),
+            Ok(None) => {
+                return serde_json::json!({ "error": format!("Account {} not found", account_id) })
+            }
             Err(e) => return serde_json::json!({ "error": format!("Database error: {}", e) }),
         };
 
@@ -350,43 +388,58 @@ impl AsyncNodeLogic for PublisherLogic {
             None => return serde_json::json!({ "error": "No video path provided" }),
         };
 
-        let seo_metadata: SEOMetadata = match input.get("seo_metadata")
-            .and_then(|v| serde_json::from_value(v.clone()).ok()) {
+        let seo_metadata: SEOMetadata = match input
+            .get("seo_metadata")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+        {
             Some(m) => m,
             None => return serde_json::json!({ "error": "No SEO metadata provided" }),
         };
 
         let thumbnail_path = input.get("thumbnail_path").and_then(|v| v.as_str());
 
-        let scheduled_publish: Option<chrono::DateTime<chrono::Utc>> = input.get("scheduled_publish")
+        let scheduled_publish: Option<chrono::DateTime<chrono::Utc>> = input
+            .get("scheduled_publish")
             .and_then(|v| v.as_str())
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc));
 
-        info!("Publisher: Uploading video to YouTube account '{}' - '{}'", account.name, seo_metadata.title);
+        info!(
+            "Publisher: Uploading video to YouTube account '{}' - '{}'",
+            account.name, seo_metadata.title
+        );
 
         // Get access token
         let access_token = match self.get_access_token(&account).await {
             Ok(t) => t,
-            Err(e) => return serde_json::json!({ "error": format!("Failed to get access token: {}", e) }),
+            Err(e) => {
+                return serde_json::json!({ "error": format!("Failed to get access token: {}", e) })
+            }
         };
 
         // Download video from S3
         let video_data = match self.s3_client.download_bytes(&video_path).await {
             Ok(d) => d,
-            Err(e) => return serde_json::json!({ "error": format!("Failed to download video: {}", e) }),
+            Err(e) => {
+                return serde_json::json!({ "error": format!("Failed to download video: {}", e) })
+            }
         };
 
         // Upload main video to YouTube
-        let youtube_video_id = match self.upload_video(
-            &account,
-            &access_token,
-            video_data,
-            &seo_metadata,
-            scheduled_publish,
-        ).await {
+        let youtube_video_id = match self
+            .upload_video(
+                &account,
+                &access_token,
+                video_data,
+                &seo_metadata,
+                scheduled_publish,
+            )
+            .await
+        {
             Ok(id) => id,
-            Err(e) => return serde_json::json!({ "error": format!("YouTube upload failed: {}", e) }),
+            Err(e) => {
+                return serde_json::json!({ "error": format!("YouTube upload failed: {}", e) })
+            }
         };
 
         // --- SHORTS UPLOAD ---
@@ -395,21 +448,26 @@ impl AsyncNodeLogic for PublisherLogic {
             if let Ok(shorts_data) = self.s3_client.download_bytes(shorts_path).await {
                 let mut shorts_metadata = seo_metadata.clone();
                 shorts_metadata.title = format!("{} #shorts", shorts_metadata.title);
-                
-                let _ = self.upload_video(
-                    &account,
-                    &access_token,
-                    shorts_data,
-                    &shorts_metadata,
-                    None, // Upload shorts immediately
-                ).await;
+
+                let _ = self
+                    .upload_video(
+                        &account,
+                        &access_token,
+                        shorts_data,
+                        &shorts_metadata,
+                        None, // Upload shorts immediately
+                    )
+                    .await;
             }
         }
 
         // Upload thumbnail if available
         if let Some(thumb_path) = thumbnail_path {
             if let Ok(thumb_data) = self.s3_client.download_bytes(thumb_path).await {
-                match self.set_thumbnail(&access_token, &youtube_video_id, thumb_data).await {
+                match self
+                    .set_thumbnail(&access_token, &youtube_video_id, thumb_data)
+                    .await
+                {
                     Ok(_) => info!("Publisher: Custom thumbnail uploaded successfully"),
                     Err(e) if e.contains("PERMISSION_DENIED") => {
                         warn!("Publisher: {}", e);
@@ -442,28 +500,29 @@ impl AsyncNodeLogic for PublisherLogic {
         if let Some(error) = exec_res.get("error").and_then(|v| v.as_str()) {
             error!("Publisher failed: {}", error);
             shared.insert(state_keys::ERROR.to_string(), serde_json::json!(error));
-            
+
             // Mark video as failed in database
             if let Some(vid) = shared.get(state_keys::VIDEO_ID).and_then(|v| v.as_str()) {
                 if let Ok(video_id) = uuid::Uuid::parse_str(vid) {
-                    let _ = db::mark_video_failed(&self.db_pool, video_id, "publisher", error).await;
+                    let _ =
+                        db::mark_video_failed(&self.db_pool, video_id, "publisher", error).await;
                 }
             }
-            
+
             return Some("error".to_string());
         }
 
-        let youtube_video_id = exec_res.get("youtube_video_id")
+        let youtube_video_id = exec_res
+            .get("youtube_video_id")
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let youtube_url = exec_res.get("youtube_url")
+        let youtube_url = exec_res
+            .get("youtube_url")
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let title = exec_res.get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let title = exec_res.get("title").and_then(|v| v.as_str()).unwrap_or("");
 
         info!(
             "Publisher: Video published successfully!\n  Title: {}\n  URL: {}",
@@ -476,10 +535,16 @@ impl AsyncNodeLogic for PublisherLogic {
         );
 
         // Mark production as complete
-        shared.insert("production_in_progress".to_string(), serde_json::json!(false));
+        shared.insert(
+            "production_in_progress".to_string(),
+            serde_json::json!(false),
+        );
 
-        let is_autonomous = exec_res.get("is_autonomous").and_then(|v| v.as_bool()).unwrap_or(true);
-        
+        let is_autonomous = exec_res
+            .get("is_autonomous")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
         if is_autonomous {
             shared.insert(
                 "last_publish_time".to_string(),
@@ -487,10 +552,14 @@ impl AsyncNodeLogic for PublisherLogic {
             );
 
             // Increment video count
-            let current_count = shared.get("total_video_count")
+            let current_count = shared
+                .get("total_video_count")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            shared.insert("total_video_count".to_string(), serde_json::json!(current_count + 1));
+            shared.insert(
+                "total_video_count".to_string(),
+                serde_json::json!(current_count + 1),
+            );
         }
 
         // Mark video as published in database
@@ -502,15 +571,15 @@ impl AsyncNodeLogic for PublisherLogic {
                         "UPDATE videos SET youtube_account_id = $1 WHERE id = $2",
                         acc_id as i32,
                         video_id
-                    ).execute(&*self.db_pool).await;
+                    )
+                    .execute(&*self.db_pool)
+                    .await;
                 }
 
-                if let Err(e) = db::mark_video_published(
-                    &self.db_pool,
-                    video_id,
-                    youtube_video_id,
-                    youtube_url,
-                ).await {
+                if let Err(e) =
+                    db::mark_video_published(&self.db_pool, video_id, youtube_video_id, youtube_url)
+                        .await
+                {
                     error!("Failed to mark video as published in database: {}", e);
                 }
             }

@@ -92,6 +92,7 @@ impl VideoProductionFlow {
             client_id: settings.youtube.client_id.clone(),
             client_secret: settings.youtube.client_secret.clone(),
             refresh_token: settings.youtube.refresh_token.clone(),
+            default_account_id: settings.youtube.default_account_id,
             ..Default::default()
         };
 

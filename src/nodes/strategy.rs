@@ -4,8 +4,8 @@
 //! Uses LLM to generate compelling topic ideas based on the wisdom source catalog.
 
 use async_trait::async_trait;
-use orichalcum::{AsyncNodeLogic, NodeValue};
 use orichalcum::llm::{Client, Enabled, Providers};
+use orichalcum::{AsyncNodeLogic, NodeValue};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -34,9 +34,11 @@ impl Default for StrategyConfig {
         Self {
             target_duration_min: 12,
             target_duration_max: 20,
-            persona: "An experienced traveler on life's journey, sharing wisdom with his past self. \
+            persona:
+                "An experienced traveler on life's journey, sharing wisdom with his past self. \
                      Neither a mentor nor professor, but a thoughtful companion who has walked \
-                     the path and learned from both triumphs and failures.".to_string(),
+                     the path and learned from both triumphs and failures."
+                    .to_string(),
             channel_name: "Excelsior Academy".to_string(),
         }
     }
@@ -261,7 +263,12 @@ Respond in JSON format."#,
     }
 
     /// Build the user prompt for a specific source focus
-    fn build_user_prompt(&self, source_focus: &str, seed_topic: Option<&str>, library_seed: Option<&str>) -> String {
+    fn build_user_prompt(
+        &self,
+        source_focus: &str,
+        seed_topic: Option<&str>,
+        library_seed: Option<&str>,
+    ) -> String {
         let seed_section = seed_topic
             .map(|t| format!("\n\nThe user has specifically requested this seed topic: \"{}\".\nBuild the topic brief around this theme.", t))
             .unwrap_or_default();
@@ -289,12 +296,9 @@ Return a JSON object with this structure:
     "target_keywords": ["keyword1", "keyword2", "keyword3"],
     "hook_angle": "The specific angle or question that will hook viewers in the first 30 seconds"
 }}"#,
-            source_focus,
-            seed_section,
-            library_section
+            source_focus, seed_section, library_section
         )
     }
-
 }
 
 #[async_trait]
@@ -321,9 +325,7 @@ impl AsyncNodeLogic for StrategyLogic {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let scheduled_publish = shared
-            .get("scheduled_publish")
-            .cloned();
+        let scheduled_publish = shared.get("scheduled_publish").cloned();
 
         serde_json::json!({
             "video_id": video_id,
@@ -337,7 +339,10 @@ impl AsyncNodeLogic for StrategyLogic {
     }
 
     async fn exec(&self, input: NodeValue) -> NodeValue {
-        let is_autonomous = input.get("is_autonomous").and_then(|v| v.as_bool()).unwrap_or(true);
+        let is_autonomous = input
+            .get("is_autonomous")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         // CASE 0: Bypass if manual script is provided
         if let Some(manual_script) = input.get("manual_script").filter(|v| !v.is_null()) {
@@ -353,8 +358,14 @@ impl AsyncNodeLogic for StrategyLogic {
         }
 
         // CASE 1: Resume if topic brief already exists
-        if let Some(existing_brief) = input.get("topic_brief").and_then(|v| serde_json::from_value::<TopicBrief>(v.clone()).ok()) {
-            info!("Strategy: Resuming with existing topic brief: {}", existing_brief.topic);
+        if let Some(existing_brief) = input
+            .get("topic_brief")
+            .and_then(|v| serde_json::from_value::<TopicBrief>(v.clone()).ok())
+        {
+            info!(
+                "Strategy: Resuming with existing topic brief: {}",
+                existing_brief.topic
+            );
             return serde_json::json!({
                 "success": true,
                 "topic_data": serde_json::to_value(&existing_brief).unwrap(),
@@ -364,19 +375,22 @@ impl AsyncNodeLogic for StrategyLogic {
             });
         }
 
-        let source_focus = input.get("source_focus")
+        let source_focus = input
+            .get("source_focus")
             .and_then(|v| v.as_str())
             .unwrap_or("Bible");
 
-        let seed_topic = input.get("seed_topic")
-            .and_then(|v| v.as_str());
+        let seed_topic = input.get("seed_topic").and_then(|v| v.as_str());
 
         // Fetch a seed from the wisdom library if no explicit seed topic is provided
         let mut library_seed = None;
         if seed_topic.is_none() {
             if let Ok(Some((chunk, author, title))) = sqlx::query_as::<_, (String, String, String)>(
-                "SELECT content_chunk, author, title FROM wisdom_library ORDER BY random() LIMIT 1"
-            ).fetch_optional(&*self.db_pool).await {
+                "SELECT content_chunk, author, title FROM wisdom_library ORDER BY random() LIMIT 1",
+            )
+            .fetch_optional(&*self.db_pool)
+            .await
+            {
                 info!("Strategy: Using library seed from {}'s '{}'", author, title);
                 library_seed = Some(format!("{} (from '{}' by {})", chunk, title, author));
             }
@@ -386,13 +400,16 @@ impl AsyncNodeLogic for StrategyLogic {
         let user_prompt = self.build_user_prompt(source_focus, seed_topic, library_seed.as_deref());
 
         // Call DeepSeek for topic generation
-        let response = match self.llm_client.deepseek_complete()
+        let response = match self
+            .llm_client
+            .deepseek_complete()
             .model("deepseek-chat")
             .system(&system_prompt)
             .user(&user_prompt)
             .temperature(0.8) // Higher temperature for creativity
             .max_tokens(1000)
-            .await {
+            .await
+        {
             Ok(text) => text,
             Err(e) => {
                 error!("Strategy LLM call failed: {}", e);
@@ -422,7 +439,10 @@ impl AsyncNodeLogic for StrategyLogic {
                 })
             }
             Err(e) => {
-                error!("Failed to parse LLM response: {}. Response: {}", e, response);
+                error!(
+                    "Failed to parse LLM response: {}. Response: {}",
+                    e, response
+                );
                 serde_json::json!({
                     "error": format!("Failed to parse topic response: {}", e),
                     "raw_response": response
@@ -438,13 +458,21 @@ impl AsyncNodeLogic for StrategyLogic {
         exec_res: NodeValue,
     ) -> Option<String> {
         // Handle manual bypass
-        if exec_res.get("is_manual").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if exec_res
+            .get("is_manual")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             if let Some(video_id) = exec_res.get("video_id").and_then(|v| v.as_str()) {
-                shared.insert(state_keys::VIDEO_ID.to_string(), serde_json::json!(video_id));
+                shared.insert(
+                    state_keys::VIDEO_ID.to_string(),
+                    serde_json::json!(video_id),
+                );
             }
             // For manual scripts, we create a dummy topic brief or just skip it
             // We'll create a simple one for DB purposes
-            let video_id = exec_res.get("video_id")
+            let video_id = exec_res
+                .get("video_id")
                 .and_then(|v| v.as_str())
                 .and_then(|s| Uuid::parse_str(s).ok())
                 .unwrap_or_else(Uuid::new_v4);
@@ -454,15 +482,20 @@ impl AsyncNodeLogic for StrategyLogic {
                 topic: "Manual Script Video".to_string(),
                 description: "User-provided script".to_string(),
                 target_duration_minutes: 0,
-                primary_source: WisdomSource::Philosophy { author: "User".to_string() },
+                primary_source: WisdomSource::Philosophy {
+                    author: "User".to_string(),
+                },
                 secondary_sources: vec![],
                 target_keywords: vec![],
                 hook_angle: "Manual".to_string(),
                 scheduled_publish: None,
                 is_autonomous: false,
             };
-            shared.insert(state_keys::TOPIC_BRIEF.to_string(), serde_json::to_value(&topic_brief).unwrap());
-            
+            shared.insert(
+                state_keys::TOPIC_BRIEF.to_string(),
+                serde_json::to_value(&topic_brief).unwrap(),
+            );
+
             return Some("default".to_string());
         }
 
@@ -474,7 +507,11 @@ impl AsyncNodeLogic for StrategyLogic {
         }
 
         // Handle resume bypass
-        if exec_res.get("is_resume").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if exec_res
+            .get("is_resume")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             return Some("default".to_string());
         }
 
@@ -487,7 +524,10 @@ impl AsyncNodeLogic for StrategyLogic {
             }
         };
 
-        let is_autonomous = exec_res.get("is_autonomous").and_then(|v| v.as_bool()).unwrap_or(true);
+        let is_autonomous = exec_res
+            .get("is_autonomous")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         let video_id = exec_res
             .get("video_id")
@@ -502,15 +542,29 @@ impl AsyncNodeLogic for StrategyLogic {
                 let category = ps.get("category").and_then(|v| v.as_str()).unwrap_or("");
                 let specific = ps.get("specific").and_then(|v| v.as_str()).unwrap_or("");
                 match category {
-                    "Bible" => WisdomSource::Bible { book: specific.to_string() },
-                    "Stoicism" => WisdomSource::Stoicism { author: specific.to_string() },
-                    "Philosophy" => WisdomSource::Philosophy { author: specific.to_string() },
-                    "Biography" => WisdomSource::Biography { subject: specific.to_string() },
-                    "Psychology" => WisdomSource::Psychology { author: specific.to_string() },
-                    _ => WisdomSource::Bible { book: specific.to_string() },
+                    "Bible" => WisdomSource::Bible {
+                        book: specific.to_string(),
+                    },
+                    "Stoicism" => WisdomSource::Stoicism {
+                        author: specific.to_string(),
+                    },
+                    "Philosophy" => WisdomSource::Philosophy {
+                        author: specific.to_string(),
+                    },
+                    "Biography" => WisdomSource::Biography {
+                        subject: specific.to_string(),
+                    },
+                    "Psychology" => WisdomSource::Psychology {
+                        author: specific.to_string(),
+                    },
+                    _ => WisdomSource::Bible {
+                        book: specific.to_string(),
+                    },
                 }
             })
-            .unwrap_or(WisdomSource::Bible { book: "Proverbs".to_string() });
+            .unwrap_or(WisdomSource::Bible {
+                book: "Proverbs".to_string(),
+            });
 
         let secondary_sources: Vec<WisdomSource> = topic_data
             .get("secondary_sources")
@@ -521,11 +575,21 @@ impl AsyncNodeLogic for StrategyLogic {
                         let category = s.get("category")?.as_str()?;
                         let specific = s.get("specific")?.as_str()?;
                         Some(match category {
-                            "Bible" => WisdomSource::Bible { book: specific.to_string() },
-                            "Stoicism" => WisdomSource::Stoicism { author: specific.to_string() },
-                            "Philosophy" => WisdomSource::Philosophy { author: specific.to_string() },
-                            "Biography" => WisdomSource::Biography { subject: specific.to_string() },
-                            "Psychology" => WisdomSource::Psychology { author: specific.to_string() },
+                            "Bible" => WisdomSource::Bible {
+                                book: specific.to_string(),
+                            },
+                            "Stoicism" => WisdomSource::Stoicism {
+                                author: specific.to_string(),
+                            },
+                            "Philosophy" => WisdomSource::Philosophy {
+                                author: specific.to_string(),
+                            },
+                            "Biography" => WisdomSource::Biography {
+                                subject: specific.to_string(),
+                            },
+                            "Psychology" => WisdomSource::Psychology {
+                                author: specific.to_string(),
+                            },
                             _ => return None,
                         })
                     })
@@ -551,21 +615,34 @@ impl AsyncNodeLogic for StrategyLogic {
 
         let topic_brief = TopicBrief {
             video_id,
-            topic: topic_data.get("topic").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            description: topic_data.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            target_duration_minutes: (self.config.target_duration_min + self.config.target_duration_max) / 2,
+            topic: topic_data
+                .get("topic")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            description: topic_data
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            target_duration_minutes: (self.config.target_duration_min
+                + self.config.target_duration_max)
+                / 2,
             primary_source,
             secondary_sources,
             target_keywords,
-            hook_angle: topic_data.get("hook_angle").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            hook_angle: topic_data
+                .get("hook_angle")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             scheduled_publish,
             is_autonomous,
         };
 
         info!(
             "Strategy: Generated topic brief for video {}: {}",
-            video_id,
-            topic_brief.topic
+            video_id, topic_brief.topic
         );
 
         // Store in shared state
@@ -579,11 +656,13 @@ impl AsyncNodeLogic for StrategyLogic {
         );
 
         // Persist to database - create new video record
-        let video = Video::new_production(
+        let youtube_account_id = shared.get("youtube_account_id").and_then(|v| v.as_i64()).map(|id| id as i32);
+        let mut video = Video::new_production(
             video_id,
             serde_json::to_value(&topic_brief).unwrap_or(serde_json::json!(null)),
             scheduled_publish,
         );
+        video.youtube_account_id = youtube_account_id;
         if let Err(e) = db::insert_video(&self.db_pool, &video).await {
             error!("Failed to persist video to database: {}", e);
             // Continue anyway - in-memory state still works

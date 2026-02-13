@@ -81,8 +81,16 @@ pub struct VideoAssemblerLogic {
 }
 
 impl VideoAssemblerLogic {
-    pub fn new(config: VideoAssemblerConfig, s3_client: Arc<S3Client>, db_pool: Arc<PgPool>) -> Self {
-        Self { config, s3_client, db_pool }
+    pub fn new(
+        config: VideoAssemblerConfig,
+        s3_client: Arc<S3Client>,
+        db_pool: Arc<PgPool>,
+    ) -> Self {
+        Self {
+            config,
+            s3_client,
+            db_pool,
+        }
     }
 
     /// Download a file from S3 to local temp
@@ -92,13 +100,15 @@ impl VideoAssemblerLogic {
 
     /// Upload a local file to S3
     async fn upload_to_s3(&self, local_path: &str, s3_path: &str) -> Result<(), String> {
-        self.s3_client.upload_file(local_path, s3_path, "video/mp4").await
+        self.s3_client
+            .upload_file(local_path, s3_path, "video/mp4")
+            .await
     }
 
     /// Run the Python bridge and parse output
     async fn run_bridge(&self, input: &BridgeInput) -> Result<BridgeOutput, String> {
         let input_json = serde_json::to_string(input).map_err(|e| e.to_string())?;
-        
+
         let mut child = Command::new("python3")
             .arg(&self.config.bridge_script_path)
             .stdin(Stdio::piped())
@@ -109,13 +119,16 @@ impl VideoAssemblerLogic {
 
         if let Some(mut stdin) = child.stdin.take() {
             use tokio::io::AsyncWriteExt;
-            stdin.write_all(input_json.as_bytes()).await.map_err(|e| e.to_string())?;
+            stdin
+                .write_all(input_json.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
             std::mem::drop(stdin);
         }
 
         let output = child.wait_with_output().await.map_err(|e| e.to_string())?;
         let stdout = String::from_utf8_lossy(&output.stdout);
-        
+
         if !output.status.success() {
             return Err(format!("Python bridge failed: {}", stdout));
         }
@@ -131,10 +144,22 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
         _params: &HashMap<String, NodeValue>,
         shared: &HashMap<String, NodeValue>,
     ) -> NodeValue {
-        let audio_path = shared.get(state_keys::AUDIO_PATH).cloned().unwrap_or(serde_json::json!(null));
-        let audio_timing = shared.get(state_keys::AUDIO_TIMING).cloned().unwrap_or(serde_json::json!(null));
-        let asset_manifest = shared.get(state_keys::ASSET_MANIFEST).cloned().unwrap_or(serde_json::json!(null));
-        let video_id = shared.get(state_keys::VIDEO_ID).cloned().unwrap_or(serde_json::json!(null));
+        let audio_path = shared
+            .get(state_keys::AUDIO_PATH)
+            .cloned()
+            .unwrap_or(serde_json::json!(null));
+        let audio_timing = shared
+            .get(state_keys::AUDIO_TIMING)
+            .cloned()
+            .unwrap_or(serde_json::json!(null));
+        let asset_manifest = shared
+            .get(state_keys::ASSET_MANIFEST)
+            .cloned()
+            .unwrap_or(serde_json::json!(null));
+        let video_id = shared
+            .get(state_keys::VIDEO_ID)
+            .cloned()
+            .unwrap_or(serde_json::json!(null));
 
         serde_json::json!({
             "audio_path": audio_path,
@@ -146,7 +171,8 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
 
     async fn exec(&self, input: NodeValue) -> NodeValue {
         info!("VideoAssembler: Initializing...");
-        let video_id = input.get("video_id")
+        let video_id = input
+            .get("video_id")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
@@ -156,14 +182,18 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
             None => return serde_json::json!({ "error": "No audio path provided" }),
         };
 
-        let audio_timing: AudioTiming = match input.get("audio_timing")
-            .and_then(|v| serde_json::from_value(v.clone()).ok()) {
+        let audio_timing: AudioTiming = match input
+            .get("audio_timing")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+        {
             Some(t) => t,
             None => return serde_json::json!({ "error": "No audio timing provided" }),
         };
 
-        let asset_manifest: AssetManifest = match input.get("asset_manifest")
-            .and_then(|v| serde_json::from_value(v.clone()).ok()) {
+        let asset_manifest: AssetManifest = match input
+            .get("asset_manifest")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+        {
             Some(m) => m,
             None => return serde_json::json!({ "error": "No asset manifest provided" }),
         };
@@ -216,7 +246,7 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
             Ok(result) => result,
             Err(e) => return serde_json::json!({ "error": format!("Python bridge failed: {}", e) }),
         };
-        
+
         // Upload final video to S3
         let s3_video_path = format!("videos/{}/{}.mp4", video_id, video_id);
         if let Err(e) = self.upload_to_s3(&output_path, &s3_video_path).await {
@@ -225,18 +255,29 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
 
         // --- SHORTS RENDERING ---
         let mut shorts_path = None;
-        if let Some(script) = input.get("script").and_then(|v| serde_json::from_value::<crate::nodes::Script>(v.clone()).ok()) {
+        if let Some(script) = input
+            .get("script")
+            .and_then(|v| serde_json::from_value::<crate::nodes::Script>(v.clone()).ok())
+        {
             if let Some(idx) = script.shorts_candidate_index {
-                info!("VideoAssembler: Rendering vertical Short from section {}...", idx);
+                info!(
+                    "VideoAssembler: Rendering vertical Short from section {}...",
+                    idx
+                );
                 let shorts_output_path = format!("{}/short.mp4", temp_dir);
-                
+
                 // Construct a manifest for just the Short
                 let mut short_manifest = local_manifest.clone();
-                let section_assets = short_manifest.section_assets.get(idx).cloned().unwrap_or(SectionAssets {
-                    section_title: "Short".to_string(),
-                    video_clips: vec![],
-                    images: vec![],
-                });
+                let section_assets =
+                    short_manifest
+                        .section_assets
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or(SectionAssets {
+                            section_title: "Short".to_string(),
+                            video_clips: vec![],
+                            images: vec![],
+                        });
                 short_manifest.section_assets = vec![section_assets];
 
                 let short_bridge_input = BridgeInput {
@@ -255,7 +296,11 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
 
                 if self.run_bridge(&short_bridge_input).await.is_ok() {
                     let s3_short_path = format!("videos/{}/short.mp4", video_id);
-                    if self.upload_to_s3(&shorts_output_path, &s3_short_path).await.is_ok() {
+                    if self
+                        .upload_to_s3(&shorts_output_path, &s3_short_path)
+                        .await
+                        .is_ok()
+                    {
                         shorts_path = Some(s3_short_path);
                         info!("VideoAssembler: Vertical Short uploaded successfully");
                     }
@@ -275,7 +320,6 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
         })
     }
 
-
     async fn post(
         &self,
         shared: &mut HashMap<String, NodeValue>,
@@ -285,21 +329,23 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
         if let Some(error) = exec_res.get("error").and_then(|v| v.as_str()) {
             error!("VideoAssembler failed: {}", error);
             shared.insert(state_keys::ERROR.to_string(), serde_json::json!(error));
-            
+
             // Mark video as failed in database
             if let Some(vid) = shared.get(state_keys::VIDEO_ID).and_then(|v| v.as_str()) {
                 if let Ok(video_id) = uuid::Uuid::parse_str(vid) {
-                    let _ = db::mark_video_failed(&self.db_pool, video_id, "video_assembler", error).await;
+                    let _ =
+                        db::mark_video_failed(&self.db_pool, video_id, "video_assembler", error)
+                            .await;
                 }
             }
-            
+
             return Some("error".to_string());
         }
 
         if let Some(video_path) = exec_res.get("video_path") {
             shared.insert(state_keys::VIDEO_PATH.to_string(), video_path.clone());
             info!("VideoAssembler: Video assembled successfully");
-            
+
             if let Some(shorts_path) = exec_res.get("shorts_path") {
                 shared.insert("shorts_path".to_string(), shorts_path.clone());
             }
@@ -308,14 +354,21 @@ impl AsyncNodeLogic for VideoAssemblerLogic {
             if let Some(vid) = exec_res.get("video_id").and_then(|v| v.as_str()) {
                 if let Ok(video_id) = uuid::Uuid::parse_str(vid) {
                     if let Some(path_str) = video_path.as_str() {
-                        let _ = db::update_video_text_field(&self.db_pool, video_id, "video_path", path_str).await;
+                        let _ = db::update_video_text_field(
+                            &self.db_pool,
+                            video_id,
+                            "video_path",
+                            path_str,
+                        )
+                        .await;
                     }
                     if let Some(shorts_str) = exec_res.get("shorts_path").and_then(|v| v.as_str()) {
                         // We need a helper for shorts_path or use a custom query
                         let _ = sqlx::query("UPDATE videos SET shorts_path = $1 WHERE id = $2")
                             .bind(shorts_str)
                             .bind(video_id)
-                            .execute(&*self.db_pool).await;
+                            .execute(&*self.db_pool)
+                            .await;
                     }
                 }
             }

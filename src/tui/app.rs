@@ -17,7 +17,13 @@ pub enum Tab {
 
 impl Tab {
     pub fn all() -> &'static [Tab] {
-        &[Tab::Dashboard, Tab::Videos, Tab::Queue, Tab::Retry, Tab::Settings]
+        &[
+            Tab::Dashboard,
+            Tab::Videos,
+            Tab::Queue,
+            Tab::Retry,
+            Tab::Settings,
+        ]
     }
 
     pub fn title(&self) -> &'static str {
@@ -76,34 +82,34 @@ pub struct App {
     pub should_quit: bool,
     pub last_refresh: Instant,
     pub refresh_interval: Duration,
-    
+
     // Connection state
     pub connected: bool,
     pub last_error: Option<String>,
-    
+
     // Dashboard data
     pub status: DaemonStatus,
     pub stats: Stats,
-    
+
     // Videos tab
     pub videos: Vec<VideoSummary>,
     pub videos_selected: usize,
     pub videos_filter: Option<String>,
     pub videos_scroll: usize,
-    
+
     // Queue tab
     pub queue: Vec<QueueItem>,
     pub queue_selected: usize,
     pub queue_input: String,
     pub queue_source_input: String,
     pub queue_editing_source: bool,
-    
+
     // Retry tab
     pub retry_videos: Vec<VideoSummary>,
     pub retry_selected: usize,
     pub retry_in_progress: bool,
     pub retry_result: Option<Result<String, String>>,
-    
+
     // Activity log
     pub activity_log: Vec<String>,
     pub busy: bool,
@@ -118,29 +124,29 @@ impl App {
             should_quit: false,
             last_refresh: Instant::now() - Duration::from_secs(10), // Force immediate refresh
             refresh_interval: Duration::from_secs(2),
-            
+
             connected: false,
             last_error: None,
-            
+
             status: DaemonStatus::default(),
             stats: Stats::default(),
-            
+
             videos: Vec::new(),
             videos_selected: 0,
             videos_filter: None,
             videos_scroll: 0,
-            
+
             queue: Vec::new(),
             queue_selected: 0,
             queue_input: String::new(),
             queue_source_input: String::new(),
             queue_editing_source: false,
-            
+
             retry_videos: Vec::new(),
             retry_selected: 0,
             retry_in_progress: false,
             retry_result: None,
-            
+
             activity_log: vec!["TUI started".to_string()],
             busy: false,
         }
@@ -148,7 +154,8 @@ impl App {
 
     pub fn log(&mut self, msg: impl Into<String>) {
         let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
-        self.activity_log.push(format!("[{}] {}", timestamp, msg.into()));
+        self.activity_log
+            .push(format!("[{}] {}", timestamp, msg.into()));
         if self.activity_log.len() > 100 {
             self.activity_log.remove(0);
         }
@@ -184,7 +191,11 @@ impl App {
                 }
             }
             Tab::Videos => {
-                if let Ok(videos) = self.client.list_videos(self.videos_filter.as_deref(), Some(100)).await {
+                if let Ok(videos) = self
+                    .client
+                    .list_videos(self.videos_filter.as_deref(), Some(100))
+                    .await
+                {
                     self.videos = videos;
                 }
             }
@@ -196,7 +207,8 @@ impl App {
             Tab::Retry => {
                 if let Ok(videos) = self.client.list_videos(Some("failed"), Some(50)).await {
                     // Filter to only those that failed at publisher stage (have video_path)
-                    self.retry_videos = videos.into_iter()
+                    self.retry_videos = videos
+                        .into_iter()
                         .filter(|v| v.failed_at_stage.as_deref() == Some("publisher"))
                         .collect();
                 }
@@ -222,11 +234,26 @@ impl App {
                 self.should_quit = true;
                 return None;
             }
-            (_, KeyCode::F(1)) => { self.active_tab = Tab::Dashboard; return None; }
-            (_, KeyCode::F(2)) => { self.active_tab = Tab::Videos; return None; }
-            (_, KeyCode::F(3)) => { self.active_tab = Tab::Queue; return None; }
-            (_, KeyCode::F(4)) => { self.active_tab = Tab::Retry; return None; }
-            (_, KeyCode::F(5)) => { self.active_tab = Tab::Settings; return None; }
+            (_, KeyCode::F(1)) => {
+                self.active_tab = Tab::Dashboard;
+                return None;
+            }
+            (_, KeyCode::F(2)) => {
+                self.active_tab = Tab::Videos;
+                return None;
+            }
+            (_, KeyCode::F(3)) => {
+                self.active_tab = Tab::Queue;
+                return None;
+            }
+            (_, KeyCode::F(4)) => {
+                self.active_tab = Tab::Retry;
+                return None;
+            }
+            (_, KeyCode::F(5)) => {
+                self.active_tab = Tab::Settings;
+                return None;
+            }
             (_, KeyCode::Tab) if self.input_mode == InputMode::Normal => {
                 self.active_tab = self.active_tab.next();
                 return None;

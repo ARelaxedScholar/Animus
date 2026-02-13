@@ -90,7 +90,8 @@ impl AnimusClient {
 
     async fn get<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, String> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .header("X-API-Key", &self.api_key)
             .send()
@@ -101,19 +102,26 @@ impl AnimusClient {
             return Err(format!("HTTP {}", response.status()));
         }
 
-        let api_response: ApiResponse<T> = response.json().await
+        let api_response: ApiResponse<T> = response
+            .json()
+            .await
             .map_err(|e| format!("Parse error: {}", e))?;
 
         if api_response.success {
-            api_response.data.ok_or_else(|| "No data in response".to_string())
+            api_response
+                .data
+                .ok_or_else(|| "No data in response".to_string())
         } else {
-            Err(api_response.error.unwrap_or_else(|| "Unknown error".to_string()))
+            Err(api_response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string()))
         }
     }
 
     async fn post<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, String> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("X-API-Key", &self.api_key)
             .send()
@@ -124,19 +132,30 @@ impl AnimusClient {
             return Err(format!("HTTP {}", response.status()));
         }
 
-        let api_response: ApiResponse<T> = response.json().await
+        let api_response: ApiResponse<T> = response
+            .json()
+            .await
             .map_err(|e| format!("Parse error: {}", e))?;
 
         if api_response.success {
-            api_response.data.ok_or_else(|| "No data in response".to_string())
+            api_response
+                .data
+                .ok_or_else(|| "No data in response".to_string())
         } else {
-            Err(api_response.error.unwrap_or_else(|| "Unknown error".to_string()))
+            Err(api_response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string()))
         }
     }
 
-    async fn post_json<B: Serialize, T: for<'de> Deserialize<'de>>(&self, path: &str, body: &B) -> Result<T, String> {
+    async fn post_json<B: Serialize, T: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, String> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .header("X-API-Key", &self.api_key)
             .json(body)
@@ -148,19 +167,26 @@ impl AnimusClient {
             return Err(format!("HTTP {}", response.status()));
         }
 
-        let api_response: ApiResponse<T> = response.json().await
+        let api_response: ApiResponse<T> = response
+            .json()
+            .await
             .map_err(|e| format!("Parse error: {}", e))?;
 
         if api_response.success {
-            api_response.data.ok_or_else(|| "No data in response".to_string())
+            api_response
+                .data
+                .ok_or_else(|| "No data in response".to_string())
         } else {
-            Err(api_response.error.unwrap_or_else(|| "Unknown error".to_string()))
+            Err(api_response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string()))
         }
     }
 
     async fn delete<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, String> {
         let url = format!("{}{}", self.base_url, path);
-        let response = self.client
+        let response = self
+            .client
             .delete(&url)
             .header("X-API-Key", &self.api_key)
             .send()
@@ -171,13 +197,19 @@ impl AnimusClient {
             return Err(format!("HTTP {}", response.status()));
         }
 
-        let api_response: ApiResponse<T> = response.json().await
+        let api_response: ApiResponse<T> = response
+            .json()
+            .await
             .map_err(|e| format!("Parse error: {}", e))?;
 
         if api_response.success {
-            api_response.data.ok_or_else(|| "No data in response".to_string())
+            api_response
+                .data
+                .ok_or_else(|| "No data in response".to_string())
         } else {
-            Err(api_response.error.unwrap_or_else(|| "Unknown error".to_string()))
+            Err(api_response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string()))
         }
     }
 
@@ -187,7 +219,8 @@ impl AnimusClient {
 
     pub async fn health(&self) -> Result<bool, String> {
         let url = format!("{}/health", self.base_url);
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .send()
             .await
@@ -223,7 +256,11 @@ impl AnimusClient {
     // Video Management
     // =========================================================================
 
-    pub async fn list_videos(&self, status: Option<&str>, limit: Option<i64>) -> Result<Vec<VideoSummary>, String> {
+    pub async fn list_videos(
+        &self,
+        status: Option<&str>,
+        limit: Option<i64>,
+    ) -> Result<Vec<VideoSummary>, String> {
         let mut path = "/videos".to_string();
         let mut params = vec![];
         if let Some(s) = status {
@@ -243,9 +280,14 @@ impl AnimusClient {
     }
 
     /// Download a video file to a local path
-    pub async fn download_video(&self, video_id: &str, output_path: &str) -> Result<String, String> {
+    pub async fn download_video(
+        &self,
+        video_id: &str,
+        output_path: &str,
+    ) -> Result<String, String> {
         let url = format!("{}/videos/{}/download", self.base_url, video_id);
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .header("X-API-Key", &self.api_key)
             .send()
@@ -255,7 +297,9 @@ impl AnimusClient {
         if !response.status().is_success() {
             // Try to parse error response
             if let Ok(api_response) = response.json::<ApiResponse<String>>().await {
-                return Err(api_response.error.unwrap_or_else(|| "Download failed".to_string()));
+                return Err(api_response
+                    .error
+                    .unwrap_or_else(|| "Download failed".to_string()));
             }
             return Err("Download failed".to_string());
         }
@@ -266,11 +310,15 @@ impl AnimusClient {
             .get("content-disposition")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| {
-                s.split("filename=").nth(1).map(|f| f.trim_matches('"').to_string())
+                s.split("filename=")
+                    .nth(1)
+                    .map(|f| f.trim_matches('"').to_string())
             })
             .unwrap_or_else(|| format!("{}.mp4", video_id));
 
-        let bytes = response.bytes().await
+        let bytes = response
+            .bytes()
+            .await
             .map_err(|e| format!("Failed to read response: {}", e))?;
 
         // Ensure output directory exists
@@ -281,8 +329,7 @@ impl AnimusClient {
         }
 
         let file_path = output_dir.join(&filename);
-        std::fs::write(&file_path, &bytes)
-            .map_err(|e| format!("Failed to write file: {}", e))?;
+        std::fs::write(&file_path, &bytes).map_err(|e| format!("Failed to write file: {}", e))?;
 
         Ok(file_path.to_string_lossy().to_string())
     }

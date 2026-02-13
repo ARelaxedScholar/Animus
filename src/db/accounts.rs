@@ -1,5 +1,5 @@
-use sqlx::PgPool;
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct YouTubeAccount {
@@ -23,7 +23,10 @@ pub async fn get_account(pool: &PgPool, id: i32) -> Result<Option<YouTubeAccount
     .await
 }
 
-pub async fn get_account_by_name(pool: &PgPool, name: &str) -> Result<Option<YouTubeAccount>, sqlx::Error> {
+pub async fn get_account_by_name(
+    pool: &PgPool,
+    name: &str,
+) -> Result<Option<YouTubeAccount>, sqlx::Error> {
     sqlx::query_as!(
         YouTubeAccount,
         "SELECT id, name, niche, client_id, client_secret, refresh_token, channel_id, is_active AS \"is_active!\" FROM youtube_accounts WHERE name = $1",

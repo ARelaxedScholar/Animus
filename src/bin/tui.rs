@@ -2,8 +2,8 @@
 //!
 //! A terminal-based dashboard for monitoring and controlling the Animus daemon.
 
-use animus::tui::{App, AppAction, AnimusClient};
 use animus::tui::ui;
+use animus::tui::{AnimusClient, App, AppAction};
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
@@ -27,7 +27,8 @@ enum UiMsg {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ... (keep preamble same)
     dotenvy::dotenv().ok();
-    let api_url = std::env::var("ANIMUS_API_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let api_url =
+        std::env::var("ANIMUS_API_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
     let api_key = std::env::var("ANIMUS_API_KEY").unwrap_or_else(|_| "animus_dev_key".to_string());
 
     enable_raw_mode()?;
@@ -46,9 +47,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = run_app(&mut terminal, &mut app, msg_tx, &mut msg_rx).await;
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
-    if let Err(err) = result { eprintln!("Error: {}", err); }
+    if let Err(err) = result {
+        eprintln!("Error: {}", err);
+    }
     Ok(())
 }
 
@@ -60,7 +67,9 @@ async fn run_app<B: Backend>(
 ) -> io::Result<()> {
     loop {
         terminal.draw(|f| ui::render(f, app))?;
-        if app.should_quit { return Ok(()); }
+        if app.should_quit {
+            return Ok(());
+        }
 
         let timeout = Duration::from_millis(100); // Higher frequency polling
 
@@ -100,7 +109,9 @@ async fn run_app<B: Backend>(
 
 async fn execute_action_async(client: AnimusClient, action: AppAction, tx: mpsc::Sender<UiMsg>) {
     match action {
-        AppAction::Refresh => { let _ = tx.send(UiMsg::RefreshData).await; }
+        AppAction::Refresh => {
+            let _ = tx.send(UiMsg::RefreshData).await;
+        }
         AppAction::TogglePause => {
             // We need current status to know if we are pausing or resuming
             // For simplicity in this async refactor, we just call it and log
@@ -108,15 +119,26 @@ async fn execute_action_async(client: AnimusClient, action: AppAction, tx: mpsc:
             // (In a real refactor, we'd pass current state or have the client handle toggle)
         }
         AppAction::RetryVideo(id) => {
-            let _ = tx.send(UiMsg::Log(format!("Retrying video {} in background...", id))).await;
+            let _ = tx
+                .send(UiMsg::Log(format!(
+                    "Retrying video {} in background...",
+                    id
+                )))
+                .await;
             let res = client.retry_video(&id).await;
             let _ = tx.send(UiMsg::RetryFinished(res)).await;
         }
         AppAction::AddToQueue(topic, source) => {
             let res = client.add_to_queue(&topic, source.as_deref()).await;
             match res {
-                Ok(id) => { let _ = tx.send(UiMsg::Log(format!("Added: {} ({})", topic, id))).await; }
-                Err(e) => { let _ = tx.send(UiMsg::Log(format!("Error: {}", e))).await; }
+                Ok(id) => {
+                    let _ = tx
+                        .send(UiMsg::Log(format!("Added: {} ({})", topic, id)))
+                        .await;
+                }
+                Err(e) => {
+                    let _ = tx.send(UiMsg::Log(format!("Error: {}", e))).await;
+                }
             }
             let _ = tx.send(UiMsg::RefreshData).await;
         }

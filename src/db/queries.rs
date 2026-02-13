@@ -1,19 +1,23 @@
 //! Database queries for video persistence
 
-use super::models::{Video, VideoStatus, ScriptRecord};
+use super::models::{ScriptRecord, Video, VideoStatus};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 /// Get the most recent video with 'producing' status
 pub async fn get_active_production(pool: &PgPool) -> Result<Option<Video>, sqlx::Error> {
-    sqlx::query_as::<_, Video>("SELECT * FROM videos WHERE status = 'producing' ORDER BY updated_at DESC LIMIT 1")
-        .fetch_optional(pool)
-        .await
+    sqlx::query_as::<_, Video>(
+        "SELECT * FROM videos WHERE status = 'producing' ORDER BY updated_at DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
 }
 
 /// Get the latest scheduled time across all autonomous videos
-pub async fn get_latest_scheduled_time(pool: &PgPool) -> Result<Option<DateTime<Utc>>, sqlx::Error> {
+pub async fn get_latest_scheduled_time(
+    pool: &PgPool,
+) -> Result<Option<DateTime<Utc>>, sqlx::Error> {
     let row: Option<(Option<DateTime<Utc>>,)> = sqlx::query_as(
         "SELECT scheduled_at FROM videos WHERE topic_brief->>'is_autonomous' = 'true' ORDER BY created_at DESC LIMIT 1",
     )
@@ -47,12 +51,10 @@ pub async fn list_videos(
             .await
         }
         None => {
-            sqlx::query_as::<_, Video>(
-                "SELECT * FROM videos ORDER BY created_at DESC LIMIT $1",
-            )
-            .bind(limit)
-            .fetch_all(pool)
-            .await
+            sqlx::query_as::<_, Video>("SELECT * FROM videos ORDER BY created_at DESC LIMIT $1")
+                .bind(limit)
+                .fetch_all(pool)
+                .await
         }
     }
 }
@@ -63,9 +65,9 @@ pub async fn insert_video(pool: &PgPool, video: &Video) -> Result<(), sqlx::Erro
         r#"INSERT INTO videos 
            (id, status, topic_brief, script, audio_timing, asset_manifest, 
             seo_metadata, video_path, thumbnail_path, youtube_id, youtube_url,
-            scheduled_at, published_at, error_message, failed_at_stage, 
+            youtube_account_id, scheduled_at, published_at, error_message, failed_at_stage, 
             created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"#,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)"#,
     )
     .bind(video.id)
     .bind(&video.status_str)
@@ -78,6 +80,7 @@ pub async fn insert_video(pool: &PgPool, video: &Video) -> Result<(), sqlx::Erro
     .bind(&video.thumbnail_path)
     .bind(&video.youtube_id)
     .bind(&video.youtube_url)
+    .bind(video.youtube_account_id)
     .bind(video.scheduled_at)
     .bind(video.published_at)
     .bind(&video.error_message)
@@ -216,9 +219,7 @@ pub async fn queue_seed(
 
 /// Pop the oldest seed from the queue (FIFO)
 /// Returns (id, seed_topic, source_focus) or None if queue is empty
-pub async fn pop_seed(
-    pool: &PgPool,
-) -> Result<Option<(i32, String, Option<String>)>, sqlx::Error> {
+pub async fn pop_seed(pool: &PgPool) -> Result<Option<(i32, String, Option<String>)>, sqlx::Error> {
     // Use a CTE to atomically select and delete the oldest entry
     let result: Option<(i32, String, Option<String>)> = sqlx::query_as(
         r#"WITH oldest AS (
@@ -262,9 +263,7 @@ pub async fn peek_queue(
 
 /// Clear the entire seed queue (for admin/testing)
 pub async fn clear_seed_queue(pool: &PgPool) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM seed_queue")
-        .execute(pool)
-        .await?;
+    let result = sqlx::query("DELETE FROM seed_queue").execute(pool).await?;
     Ok(result.rows_affected())
 }
 
@@ -478,9 +477,7 @@ pub async fn get_videos_needing_performance_update(
 }
 
 /// Get the latest channel baseline
-pub async fn get_channel_baseline(
-    pool: &PgPool,
-) -> Result<Option<(f32, f32, f32)>, sqlx::Error> {
+pub async fn get_channel_baseline(pool: &PgPool) -> Result<Option<(f32, f32, f32)>, sqlx::Error> {
     // Returns (avg_views_30d, avg_likes_30d, avg_retention_30d)
     let row: Option<(Option<f32>, Option<f32>, Option<f32>)> = sqlx::query_as(
         r#"SELECT avg_views_30d, avg_likes_30d, avg_retention_30d
@@ -490,7 +487,7 @@ pub async fn get_channel_baseline(
     )
     .fetch_optional(pool)
     .await?;
-    
+
     // Unwrap options, defaulting to 1.0 to avoid division by zero
     Ok(row.map(|(v, l, r)| (v.unwrap_or(1.0), l.unwrap_or(1.0), r.unwrap_or(1.0))))
 }
@@ -538,9 +535,8 @@ pub async fn get_training_data(
 ) -> Result<Vec<(Uuid, serde_json::Value, serde_json::Value, f32)>, sqlx::Error> {
     // Returns (video_id, topic_brief, script, performance_score)
     let query = match min_score {
-        Some(score) => {
-            sqlx::query_as(
-                r#"SELECT id, topic_brief, script, performance_score
+        Some(score) => sqlx::query_as(
+            r#"SELECT id, topic_brief, script, performance_score
                    FROM videos
                    WHERE status = 'published'
                      AND script IS NOT NULL
@@ -548,36 +544,35 @@ pub async fn get_training_data(
                      AND performance_score >= $1
                    ORDER BY performance_score DESC
                    LIMIT $2"#,
-            )
-            .bind(score)
-            .bind(limit)
-        }
-        None => {
-            sqlx::query_as(
-                r#"SELECT id, topic_brief, script, performance_score
+        )
+        .bind(score)
+        .bind(limit),
+        None => sqlx::query_as(
+            r#"SELECT id, topic_brief, script, performance_score
                    FROM videos
                    WHERE status = 'published'
                      AND script IS NOT NULL
                      AND performance_score IS NOT NULL
                    ORDER BY performance_score DESC
                    LIMIT $1"#,
-            )
-            .bind(limit)
-        }
+        )
+        .bind(limit),
     };
-    
+
     #[allow(clippy::type_complexity)]
-    let rows: Vec<(Uuid, Option<serde_json::Value>, Option<serde_json::Value>, Option<f32>)> = 
-        query.fetch_all(pool).await?;
-    
+    let rows: Vec<(
+        Uuid,
+        Option<serde_json::Value>,
+        Option<serde_json::Value>,
+        Option<f32>,
+    )> = query.fetch_all(pool).await?;
+
     // Filter out nulls and unwrap
     Ok(rows
         .into_iter()
-        .filter_map(|(id, tb, s, ps)| {
-            match (tb, s, ps) {
-                (Some(topic), Some(script), Some(score)) => Some((id, topic, script, score)),
-                _ => None,
-            }
+        .filter_map(|(id, tb, s, ps)| match (tb, s, ps) {
+            (Some(topic), Some(script), Some(score)) => Some((id, topic, script, score)),
+            _ => None,
         })
         .collect())
 }
@@ -627,6 +622,7 @@ pub async fn get_script_by_id(pool: &PgPool, id: i32) -> Result<Option<ScriptRec
 }
 
 /// List scripts with optional filters
+#[allow(clippy::too_many_arguments)]
 pub async fn list_scripts(
     pool: &PgPool,
     video_id: Option<Uuid>,
@@ -671,7 +667,11 @@ pub async fn list_scripts(
         params.push(max_wc.to_string());
     }
 
-    query.push_str(&format!(" ORDER BY created_at DESC LIMIT ${}::bigint OFFSET ${}::bigint", param_count + 1, param_count + 2));
+    query.push_str(&format!(
+        " ORDER BY created_at DESC LIMIT ${}::bigint OFFSET ${}::bigint",
+        param_count + 1,
+        param_count + 2
+    ));
     params.push(limit.to_string());
     params.push(offset.to_string());
 
@@ -689,17 +689,22 @@ pub async fn update_script_formats(
     id: i32,
     formats: &[String],
 ) -> Result<(), sqlx::Error> {
-    sqlx::query!("UPDATE scripts SET exported_formats = $1 WHERE id = $2", formats, id)
-        .execute(pool)
-        .await?;
+    sqlx::query!(
+        "UPDATE scripts SET exported_formats = $1 WHERE id = $2",
+        formats,
+        id
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 /// Delete a script by ID
 pub async fn delete_script(pool: &PgPool, id: i32) -> Result<bool, sqlx::Error> {
-    let result: sqlx::postgres::PgQueryResult = sqlx::query!("DELETE FROM scripts WHERE id = $1", id)
-        .execute(pool)
-        .await?;
+    let result: sqlx::postgres::PgQueryResult =
+        sqlx::query!("DELETE FROM scripts WHERE id = $1", id)
+            .execute(pool)
+            .await?;
     Ok(result.rows_affected() > 0)
 }
 

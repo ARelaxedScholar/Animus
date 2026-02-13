@@ -11,13 +11,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use std::sync::Arc;
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::api::auth::auth_middleware;
-use crate::db::{self, Video, VideoStatus, ScriptRecord};
+use crate::db::{self, ScriptRecord, Video, VideoStatus};
 use crate::storage::S3Client;
 
 /// Daemon state exposed to the API
@@ -119,9 +119,7 @@ async fn health_check() -> &'static str {
 }
 
 /// Get daemon status
-async fn get_status(
-    State(state): State<AppState>,
-) -> Json<ApiResponse<DaemonStatus>> {
+async fn get_status(State(state): State<AppState>) -> Json<ApiResponse<DaemonStatus>> {
     let status = state.current_status.read().await.clone();
     Json(ApiResponse::ok(status))
 }
@@ -134,7 +132,7 @@ async fn upload_manual_script(
     // 1. Save to file as backup
     let path = format!("manual_scripts/api_upload_{}.json", uuid::Uuid::new_v4());
     let file_result = tokio::fs::write(&path, serde_json::to_string_pretty(&script).unwrap()).await;
-    
+
     // 2. Extract topic from script content
     let topic = if let Some(sections) = script.get("sections").and_then(|s| s.as_array()) {
         if !sections.is_empty() {
@@ -159,27 +157,39 @@ async fn upload_manual_script(
             .map(|s| s.to_string())
             .unwrap_or_else(|| "manual_upload".to_string())
     };
-    
+
     // 3. Save to script repository
     let repo_result = db::insert_script(&state.db_pool, None, script.clone(), topic, None).await;
-    
+
     // 4. Combine results
     match (file_result, repo_result) {
         (Ok(_), Ok(script_id)) => (
             StatusCode::OK,
-            Json(ApiResponse::ok(format!("Script uploaded to {} and saved to repository (ID: {})", path, script_id))),
+            Json(ApiResponse::ok(format!(
+                "Script uploaded to {} and saved to repository (ID: {})",
+                path, script_id
+            ))),
         ),
         (Ok(_), Err(e)) => (
             StatusCode::PARTIAL_CONTENT,
-            Json(ApiResponse::err(format!("Script saved to {} but repository save failed: {}", path, e))),
+            Json(ApiResponse::err(format!(
+                "Script saved to {} but repository save failed: {}",
+                path, e
+            ))),
         ),
         (Err(e), Ok(script_id)) => (
             StatusCode::PARTIAL_CONTENT,
-            Json(ApiResponse::err(format!("Script saved to repository (ID: {}) but file save failed: {}", script_id, e))),
+            Json(ApiResponse::err(format!(
+                "Script saved to repository (ID: {}) but file save failed: {}",
+                script_id, e
+            ))),
         ),
         (Err(e1), Err(e2)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::err(format!("Both file and repository save failed: file: {}, repo: {}", e1, e2))),
+            Json(ApiResponse::err(format!(
+                "Both file and repository save failed: file: {}, repo: {}",
+                e1, e2
+            ))),
         ),
     }
 }
@@ -194,51 +204,63 @@ async fn queue_manual_seed(
     if let Some(topic) = payload.get("topic").and_then(|v| v.as_str()) {
         shared.insert("seed_topic".to_string(), serde_json::json!(topic));
         if let Some(source) = payload.get("source").and_then(|v| v.as_str()) {
-            shared.insert("source_focus_override".to_string(), serde_json::json!(source));
+            shared.insert(
+                "source_focus_override".to_string(),
+                serde_json::json!(source),
+            );
         }
-        (StatusCode::OK, Json(ApiResponse::ok("Topic queued for next cycle".to_string())))
+        (
+            StatusCode::OK,
+            Json(ApiResponse::ok("Topic queued for next cycle".to_string())),
+        )
     } else {
-        (StatusCode::BAD_REQUEST, Json(ApiResponse::err("Missing 'topic' field")))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::err("Missing 'topic' field")),
+        )
     }
 }
 
 /// Pause video production
-async fn pause_daemon(
-    State(state): State<AppState>,
-) -> (StatusCode, Json<ApiResponse<String>>) {
+async fn pause_daemon(State(state): State<AppState>) -> (StatusCode, Json<ApiResponse<String>>) {
     let mut paused = state.paused.write().await;
     *paused = true;
-    
+
     let mut status = state.current_status.write().await;
     status.paused = true;
-    
-    (StatusCode::OK, Json(ApiResponse::ok("Daemon paused".to_string())))
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse::ok("Daemon paused".to_string())),
+    )
 }
 
 /// Resume video production
-async fn resume_daemon(
-    State(state): State<AppState>,
-) -> (StatusCode, Json<ApiResponse<String>>) {
+async fn resume_daemon(State(state): State<AppState>) -> (StatusCode, Json<ApiResponse<String>>) {
     let mut paused = state.paused.write().await;
     *paused = false;
-    
+
     let mut status = state.current_status.write().await;
     status.paused = false;
-    
-    (StatusCode::OK, Json(ApiResponse::ok("Daemon resumed".to_string())))
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse::ok("Daemon resumed".to_string())),
+    )
 }
 
 /// Graceful shutdown
-async fn shutdown_daemon(
-    State(state): State<AppState>,
-) -> (StatusCode, Json<ApiResponse<String>>) {
+async fn shutdown_daemon(State(state): State<AppState>) -> (StatusCode, Json<ApiResponse<String>>) {
     // Send shutdown signal
     let _ = state.shutdown_tx.send(true);
-    
+
     let mut status = state.current_status.write().await;
     status.running = false;
-    
-    (StatusCode::OK, Json(ApiResponse::ok("Shutdown initiated".to_string())))
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse::ok("Shutdown initiated".to_string())),
+    )
 }
 
 // =============================================================================
@@ -267,7 +289,8 @@ pub struct VideoSummary {
 
 impl From<Video> for VideoSummary {
     fn from(v: Video) -> Self {
-        let title = v.seo_metadata
+        let title = v
+            .seo_metadata
             .as_ref()
             .and_then(|m| m.get("title"))
             .and_then(|t| t.as_str())
@@ -279,7 +302,7 @@ impl From<Video> for VideoSummary {
                     .and_then(|t| t.as_str())
                     .map(|s| s.to_string())
             });
-        
+
         Self {
             id: v.id.to_string(),
             status: v.status_str,
@@ -297,9 +320,12 @@ async fn list_videos(
     State(state): State<AppState>,
     Query(params): Query<ListVideosQuery>,
 ) -> (StatusCode, Json<ApiResponse<Vec<VideoSummary>>>) {
-    let status = params.status.as_ref().map(|s| VideoStatus::from_str(s).unwrap_or(VideoStatus::Scheduled));
+    let status = params
+        .status
+        .as_ref()
+        .map(|s| VideoStatus::from_str(s).unwrap_or(VideoStatus::Scheduled));
     let limit = params.limit.unwrap_or(50);
-    
+
     match db::list_videos(&state.db_pool, status, limit).await {
         Ok(videos) => {
             let summaries: Vec<VideoSummary> = videos.into_iter().map(|v| v.into()).collect();
@@ -335,12 +361,13 @@ pub struct VideoDetails {
 
 impl From<Video> for VideoDetails {
     fn from(v: Video) -> Self {
-        let title = v.seo_metadata
+        let title = v
+            .seo_metadata
             .as_ref()
             .and_then(|m| m.get("title"))
             .and_then(|t| t.as_str())
             .map(|s| s.to_string());
-        
+
         Self {
             id: v.id.to_string(),
             status: v.status_str,
@@ -369,12 +396,20 @@ async fn get_video(
 ) -> (StatusCode, Json<ApiResponse<VideoDetails>>) {
     let uuid = match uuid::Uuid::parse_str(&id) {
         Ok(u) => u,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(ApiResponse::err("Invalid UUID"))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::err("Invalid UUID")),
+            )
+        }
     };
-    
+
     match db::get_video(&state.db_pool, uuid).await {
         Ok(Some(video)) => (StatusCode::OK, Json(ApiResponse::ok(video.into()))),
-        Ok(None) => (StatusCode::NOT_FOUND, Json(ApiResponse::err("Video not found"))),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::err("Video not found")),
+        ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse::err(format!("Database error: {}", e))),
@@ -389,19 +424,31 @@ async fn retry_video(
 ) -> (StatusCode, Json<ApiResponse<String>>) {
     let uuid = match uuid::Uuid::parse_str(&id) {
         Ok(u) => u,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(ApiResponse::err("Invalid UUID"))),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::err("Invalid UUID")),
+            )
+        }
     };
-    
+
     // Get the video
     let video = match db::get_video(&state.db_pool, uuid).await {
         Ok(Some(v)) => v,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(ApiResponse::err("Video not found"))),
-        Err(e) => return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::err(format!("Database error: {}", e))),
-        ),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse::err("Video not found")),
+            )
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::err(format!("Database error: {}", e))),
+            )
+        }
     };
-    
+
     // Check if it's a failed video
     if video.status() != VideoStatus::Failed {
         return (
@@ -409,22 +456,27 @@ async fn retry_video(
             Json(ApiResponse::err("Only failed videos can be retried")),
         );
     }
-    
+
     // Check if it failed at publisher stage (has video_path but no youtube_id)
     if video.video_path.is_none() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ApiResponse::err("Video must have been assembled before retry. Failed at earlier stage.")),
+            Json(ApiResponse::err(
+                "Video must have been assembled before retry. Failed at earlier stage.",
+            )),
         );
     }
-    
+
     // Queue for retry by updating status and clearing error
     match db::update_video_status(&state.db_pool, uuid, VideoStatus::Producing).await {
         Ok(_) => {
             // Also inject into shared state for the main loop to pick up
             let mut shared = state.shared_state.write().await;
             shared.insert("retry_video_id".to_string(), serde_json::json!(id));
-            (StatusCode::OK, Json(ApiResponse::ok("Video queued for retry".to_string())))
+            (
+                StatusCode::OK,
+                Json(ApiResponse::ok("Video queued for retry".to_string())),
+            )
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -440,50 +492,75 @@ async fn download_video(
 ) -> Result<Response<Body>, (StatusCode, Json<ApiResponse<String>>)> {
     let uuid = match uuid::Uuid::parse_str(&id) {
         Ok(u) => u,
-        Err(_) => return Err((StatusCode::BAD_REQUEST, Json(ApiResponse::err("Invalid UUID")))),
+        Err(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::err("Invalid UUID")),
+            ))
+        }
     };
-    
+
     // Get the video
     let video = match db::get_video(&state.db_pool, uuid).await {
         Ok(Some(v)) => v,
-        Ok(None) => return Err((StatusCode::NOT_FOUND, Json(ApiResponse::err("Video not found")))),
-        Err(e) => return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::err(format!("Database error: {}", e))),
-        )),
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse::err("Video not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::err(format!("Database error: {}", e))),
+            ))
+        }
     };
-    
+
     // Check if video has a path
     let video_path = match video.video_path {
         Some(p) => p,
-        None => return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiResponse::err("Video file not available (not yet assembled)")),
-        )),
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse::err(
+                    "Video file not available (not yet assembled)",
+                )),
+            ))
+        }
     };
-    
+
     // Download from S3
     let video_bytes = match state.s3_client.download_bytes(&video_path).await {
         Ok(bytes) => bytes,
-        Err(e) => return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::err(format!("S3 download error: {}", e))),
-        )),
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::err(format!("S3 download error: {}", e))),
+            ))
+        }
     };
-    
+
     // Build filename from video title or ID
-    let filename = video.seo_metadata
+    let filename = video
+        .seo_metadata
         .as_ref()
         .and_then(|m| m.get("title"))
         .and_then(|t| t.as_str())
         .map(|s| {
             // Sanitize filename
             s.chars()
-                .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
+                .map(|c| {
+                    if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect::<String>()
         })
         .unwrap_or_else(|| id.clone());
-    
+
     let response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "video/mp4")
@@ -494,7 +571,7 @@ async fn download_video(
         .header(header::CONTENT_LENGTH, video_bytes.len())
         .body(Body::from(video_bytes))
         .unwrap();
-    
+
     Ok(response)
 }
 
@@ -566,9 +643,15 @@ async fn remove_from_queue(
     {
         Ok(result) => {
             if result.rows_affected() > 0 {
-                (StatusCode::OK, Json(ApiResponse::ok("Item removed".to_string())))
+                (
+                    StatusCode::OK,
+                    Json(ApiResponse::ok("Item removed".to_string())),
+                )
             } else {
-                (StatusCode::NOT_FOUND, Json(ApiResponse::err("Item not found")))
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(ApiResponse::err("Item not found")),
+                )
             }
         }
         Err(e) => (
@@ -579,9 +662,7 @@ async fn remove_from_queue(
 }
 
 /// Clear the entire queue
-async fn clear_queue(
-    State(state): State<AppState>,
-) -> (StatusCode, Json<ApiResponse<u64>>) {
+async fn clear_queue(State(state): State<AppState>) -> (StatusCode, Json<ApiResponse<u64>>) {
     match db::clear_seed_queue(&state.db_pool).await {
         Ok(count) => (StatusCode::OK, Json(ApiResponse::ok(count))),
         Err(e) => (
@@ -723,8 +804,10 @@ async fn list_scripts(
     .await
     {
         Ok(scripts) => {
-            let summaries: Vec<ScriptSummary> =
-                scripts.into_iter().map(|s| ScriptSummary::from(s)).collect();
+            let summaries: Vec<ScriptSummary> = scripts
+                .into_iter()
+                .map(ScriptSummary::from)
+                .collect();
             (StatusCode::OK, Json(ApiResponse::ok(summaries)))
         }
         Err(e) => (
@@ -740,11 +823,13 @@ async fn search_scripts(
     Query(params): Query<SearchScriptsQuery>,
 ) -> (StatusCode, Json<ApiResponse<Vec<ScriptSummary>>>) {
     let limit = params.limit.unwrap_or(20);
-    
+
     match db::search_scripts(&state.db_pool, &params.q, limit).await {
         Ok(scripts) => {
-            let summaries: Vec<ScriptSummary> =
-                scripts.into_iter().map(|s| ScriptSummary::from(s)).collect();
+            let summaries: Vec<ScriptSummary> = scripts
+                .into_iter()
+                .map(ScriptSummary::from)
+                .collect();
             (StatusCode::OK, Json(ApiResponse::ok(summaries)))
         }
         Err(e) => (
@@ -795,7 +880,10 @@ async fn get_script(
     Path(id): Path<i32>,
 ) -> (StatusCode, Json<ApiResponse<ScriptDetails>>) {
     match db::get_script_by_id(&state.db_pool, id).await {
-        Ok(Some(script)) => (StatusCode::OK, Json(ApiResponse::ok(ScriptDetails::from(script)))),
+        Ok(Some(script)) => (
+            StatusCode::OK,
+            Json(ApiResponse::ok(ScriptDetails::from(script))),
+        ),
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(ApiResponse::err("Script not found")),
@@ -832,7 +920,7 @@ async fn export_script(
     Query(params): Query<ExportScriptQuery>,
 ) -> Response {
     let format = params.format.as_deref().unwrap_or("json");
-    
+
     match db::get_script_by_id(&state.db_pool, id).await {
         Ok(Some(script)) => {
             let formats_to_update = match format {
@@ -841,14 +929,14 @@ async fn export_script(
                 "text" => vec!["text".to_string()],
                 _ => vec!["json".to_string()],
             };
-            
+
             // Update exported formats in database (fire and forget)
             let pool = state.db_pool.clone();
             let script_id = script.id;
             tokio::spawn(async move {
                 let _ = db::update_script_formats(&pool, script_id, &formats_to_update).await;
             });
-            
+
             // Create response based on format
             match format {
                 "json" => {
@@ -866,12 +954,12 @@ async fn export_script(
                 "markdown" => {
                     let content = &script.content;
                     let mut markdown = String::new();
-                    
+
                     // Add title from first section or topic
                     if let Some(topic) = content.get("topic").and_then(|t| t.as_str()) {
                         markdown.push_str(&format!("# {}\n\n", topic));
                     }
-                    
+
                     // Add hook
                     if let Some(hook) = content.get("hook") {
                         if let Some(narration) = hook.get("narration").and_then(|n| n.as_str()) {
@@ -880,7 +968,7 @@ async fn export_script(
                             markdown.push_str("\n\n");
                         }
                     }
-                    
+
                     // Add sections
                     if let Some(sections) = content.get("sections").and_then(|s| s.as_array()) {
                         for (i, section) in sections.iter().enumerate() {
@@ -889,14 +977,16 @@ async fn export_script(
                             } else {
                                 markdown.push_str(&format!("## Section {}\n\n", i + 1));
                             }
-                            
-                            if let Some(narration) = section.get("narration").and_then(|n| n.as_str()) {
+
+                            if let Some(narration) =
+                                section.get("narration").and_then(|n| n.as_str())
+                            {
                                 markdown.push_str(narration);
                                 markdown.push_str("\n\n");
                             }
                         }
                     }
-                    
+
                     // Add CTA
                     if let Some(cta) = content.get("cta") {
                         if let Some(narration) = cta.get("narration").and_then(|n| n.as_str()) {
@@ -905,7 +995,7 @@ async fn export_script(
                             markdown.push_str("\n\n");
                         }
                     }
-                    
+
                     Response::builder()
                         .status(StatusCode::OK)
                         .header(header::CONTENT_TYPE, "text/markdown")
@@ -917,12 +1007,13 @@ async fn export_script(
                         .unwrap()
                 }
                 "text" => {
-                    let text = script.content
+                    let text = script
+                        .content
                         .get("full_text")
                         .and_then(|t| t.as_str())
                         .unwrap_or_default()
                         .to_string();
-                    
+
                     Response::builder()
                         .status(StatusCode::OK)
                         .header(header::CONTENT_TYPE, "text/plain")
@@ -973,47 +1064,72 @@ pub struct FailureSummary {
 }
 
 /// Get aggregate statistics
-async fn get_stats(
-    State(state): State<AppState>,
-) -> (StatusCode, Json<ApiResponse<Stats>>) {
+async fn get_stats(State(state): State<AppState>) -> (StatusCode, Json<ApiResponse<Stats>>) {
     // Query counts
     let total: (i64,) = match sqlx::query_as("SELECT COUNT(*) FROM videos")
         .fetch_one(state.db_pool.as_ref())
         .await
     {
         Ok(r) => r,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(format!("DB error: {}", e)))),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::err(format!("DB error: {}", e))),
+            )
+        }
     };
-    
-    let published: (i64,) = match sqlx::query_as("SELECT COUNT(*) FROM videos WHERE status = 'published'")
-        .fetch_one(state.db_pool.as_ref())
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(format!("DB error: {}", e)))),
-    };
-    
+
+    let published: (i64,) =
+        match sqlx::query_as("SELECT COUNT(*) FROM videos WHERE status = 'published'")
+            .fetch_one(state.db_pool.as_ref())
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiResponse::err(format!("DB error: {}", e))),
+                )
+            }
+        };
+
     let failed: (i64,) = match sqlx::query_as("SELECT COUNT(*) FROM videos WHERE status = 'failed'")
         .fetch_one(state.db_pool.as_ref())
         .await
     {
         Ok(r) => r,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(format!("DB error: {}", e)))),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::err(format!("DB error: {}", e))),
+            )
+        }
     };
-    
-    let producing: (i64,) = match sqlx::query_as("SELECT COUNT(*) FROM videos WHERE status = 'producing'")
-        .fetch_one(state.db_pool.as_ref())
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(format!("DB error: {}", e)))),
-    };
-    
+
+    let producing: (i64,) =
+        match sqlx::query_as("SELECT COUNT(*) FROM videos WHERE status = 'producing'")
+            .fetch_one(state.db_pool.as_ref())
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiResponse::err(format!("DB error: {}", e))),
+                )
+            }
+        };
+
     let queue_length = match db::get_queue_length(&state.db_pool).await {
         Ok(l) => l,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(format!("DB error: {}", e)))),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::err(format!("DB error: {}", e))),
+            )
+        }
     };
-    
+
     // Get failure breakdown
     let failures: Vec<(Option<String>, i64)> = match sqlx::query_as(
         "SELECT failed_at_stage, COUNT(*) FROM videos WHERE status = 'failed' GROUP BY failed_at_stage"
@@ -1024,7 +1140,7 @@ async fn get_stats(
         Ok(r) => r,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::err(format!("DB error: {}", e)))),
     };
-    
+
     let recent_failures: Vec<FailureSummary> = failures
         .into_iter()
         .map(|(stage, count)| FailureSummary {
@@ -1032,20 +1148,23 @@ async fn get_stats(
             count,
         })
         .collect();
-    
+
     let success_rate = if total.0 > 0 {
         (published.0 as f64 / total.0 as f64) * 100.0
     } else {
         0.0
     };
-    
-    (StatusCode::OK, Json(ApiResponse::ok(Stats {
-        total_videos: total.0,
-        published: published.0,
-        failed: failed.0,
-        producing: producing.0,
-        queue_length,
-        success_rate,
-        recent_failures,
-    })))
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse::ok(Stats {
+            total_videos: total.0,
+            published: published.0,
+            failed: failed.0,
+            producing: producing.0,
+            queue_length,
+            success_rate,
+            recent_failures,
+        })),
+    )
 }

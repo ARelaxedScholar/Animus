@@ -89,7 +89,8 @@ impl S3Client {
 
     /// Download bytes from S3
     pub async fn download_bytes(&self, key: &str) -> Result<Vec<u8>, String> {
-        let response = self.client
+        let response = self
+            .client
             .get_object()
             .bucket(&self.bucket)
             .key(key)
@@ -97,7 +98,8 @@ impl S3Client {
             .await
             .map_err(|e| format!("S3 download failed: {}", e))?;
 
-        let data = response.body
+        let data = response
+            .body
             .collect()
             .await
             .map_err(|e| format!("Failed to read S3 body: {}", e))?
@@ -151,7 +153,8 @@ impl S3Client {
 
     /// List objects with a prefix
     pub async fn list(&self, prefix: &str) -> Result<Vec<String>, String> {
-        let response = self.client
+        let response = self
+            .client
             .list_objects_v2()
             .bucket(&self.bucket)
             .prefix(prefix)

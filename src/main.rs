@@ -8,8 +8,8 @@ use animus::db;
 use animus::flows::VideoProductionFlow;
 use animus::storage::S3Client;
 use futures::FutureExt;
-use orichalcum::NodeValue;
 use orichalcum::llm::Client as LlmClient;
+use orichalcum::NodeValue;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -50,13 +50,16 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize LLM client
     let llm_client_base = LlmClient::new();
-    
+
     let llm_client_with_ds = if settings.llm.deepseek_base_url.is_empty() {
         llm_client_base.with_deepseek(&settings.llm.deepseek_api_key)
     } else {
-        llm_client_base.with_deepseek_at(&settings.llm.deepseek_api_key, &settings.llm.deepseek_base_url)
+        llm_client_base.with_deepseek_at(
+            &settings.llm.deepseek_api_key,
+            &settings.llm.deepseek_base_url,
+        )
     };
-    
+
     let llm_client = Arc::new(llm_client_with_ds.with_gemini(&settings.llm.gemini_api_key));
     info!("LLM client initialized (DeepSeek + Gemini)");
 
@@ -76,10 +79,10 @@ async fn main() -> anyhow::Result<()> {
 
     // CLEANUP: Reset any 'producing' videos that aren't actually running
     // (We'll do hydration right after this)
-    
+
     // Initialize shared state
     let mut shared_state_map: HashMap<String, NodeValue> = HashMap::new();
-    
+
     // Check for seed topic (from environment variable)
     if let Ok(seed_topic) = std::env::var("SEED_TOPIC") {
         if !seed_topic.trim().is_empty() {
@@ -92,7 +95,10 @@ async fn main() -> anyhow::Result<()> {
     if let Ok(source_focus) = std::env::var("SOURCE_FOCUS") {
         if !source_focus.trim().is_empty() {
             info!("Source focus override: {}", source_focus);
-            shared_state_map.insert("source_focus_override".to_string(), serde_json::json!(source_focus));
+            shared_state_map.insert(
+                "source_focus_override".to_string(),
+                serde_json::json!(source_focus),
+            );
         }
     }
 
@@ -100,8 +106,11 @@ async fn main() -> anyhow::Result<()> {
     match db::get_active_production(&db_pool).await {
         Ok(Some(active_video)) => {
             info!("🔄 Resuming active production: {}", active_video.id);
-            shared_state_map.insert(animus::state_keys::VIDEO_ID.to_string(), serde_json::json!(active_video.id.to_string()));
-            
+            shared_state_map.insert(
+                animus::state_keys::VIDEO_ID.to_string(),
+                serde_json::json!(active_video.id.to_string()),
+            );
+
             if let Some(brief) = active_video.topic_brief {
                 shared_state_map.insert(animus::state_keys::TOPIC_BRIEF.to_string(), brief);
             }
@@ -117,8 +126,11 @@ async fn main() -> anyhow::Result<()> {
             if let Some(manifest) = active_video.asset_manifest {
                 shared_state_map.insert(animus::state_keys::ASSET_MANIFEST.to_string(), manifest);
             }
-            
-            shared_state_map.insert("production_in_progress".to_string(), serde_json::json!(true));
+
+            shared_state_map.insert(
+                "production_in_progress".to_string(),
+                serde_json::json!(true),
+            );
         }
         Ok(None) => {
             // Clean up any stale videos that might have been marked as producing but were lost
@@ -134,7 +146,8 @@ async fn main() -> anyhow::Result<()> {
     let shared_state_arc = Arc::new(RwLock::new(shared_state_map));
 
     // Create the production flow
-    let mut flow = VideoProductionFlow::new(&settings, llm_client, s3_client.clone(), db_pool.clone());
+    let mut flow =
+        VideoProductionFlow::new(&settings, llm_client, s3_client.clone(), db_pool.clone());
     info!("Production flow initialized");
 
     // Set up shutdown signaling
@@ -167,12 +180,17 @@ async fn main() -> anyhow::Result<()> {
             .await
             .expect("Failed to bind API port");
         info!("Control API listening on http://0.0.0.0:{}", api_port);
-        axum::serve(listener, api_router.into_make_service()).await.ok()
+        axum::serve(listener, api_router.into_make_service())
+            .await
+            .ok()
     });
 
     info!("");
     info!("🚀 Daemon starting main loop");
-    info!("   Control API: http://localhost:{}", settings.control_api_port);
+    info!(
+        "   Control API: http://localhost:{}",
+        settings.control_api_port
+    );
     info!("   POST /pause    - Pause production");
     info!("   POST /resume   - Resume production");
     info!("   POST /shutdown - Graceful shutdown");
@@ -203,11 +221,11 @@ async fn main() -> anyhow::Result<()> {
 
         // Run one production cycle
         info!("Starting production cycle...");
-        
+
         {
             let mut status = app_state.current_status.write().await;
             status.current_stage = Some("scheduler".to_string());
-            
+
             // Update next scheduled time from database
             if let Ok(Some(next)) = db::get_latest_scheduled_time(&db_pool).await {
                 let now = chrono::Utc::now();
@@ -218,9 +236,10 @@ async fn main() -> anyhow::Result<()> {
 
         // Get exclusive access to shared state for this run
         let mut shared_state = shared_state_arc.write().await;
-        
+
         // Ensure per-run state is clean IF not resuming
-        let is_resuming = shared_state.get("production_in_progress")
+        let is_resuming = shared_state
+            .get("production_in_progress")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
@@ -229,11 +248,16 @@ async fn main() -> anyhow::Result<()> {
             shared_state.remove("manual_script");
             // Note: seed_topic and source_focus_override are cleared at the end of the loop
             // but we ensure production_in_progress is false if we are not resuming
-            shared_state.insert("production_in_progress".to_string(), serde_json::json!(false));
+            shared_state.insert(
+                "production_in_progress".to_string(),
+                serde_json::json!(false),
+            );
         }
 
-        let flow_result = std::panic::AssertUnwindSafe(flow.inner_mut().run(&mut shared_state)).catch_unwind().await;
-        
+        let flow_result = std::panic::AssertUnwindSafe(flow.inner_mut().run(&mut shared_state))
+            .catch_unwind()
+            .await;
+
         match flow_result {
             Ok(Some(action)) => {
                 if action == "wait" {
@@ -251,56 +275,68 @@ async fn main() -> anyhow::Result<()> {
                         .and_then(|v: &NodeValue| v.as_str())
                         .unwrap_or("Unknown error");
                     error!("Production cycle failed: {}", error);
-                    
+
                     {
                         let mut status = app_state.current_status.write().await;
                         status.last_error = Some(error.to_string());
                         status.current_video_id = None;
                         status.current_stage = None;
                     }
-                    
+
                     // Reset resume flags
-                    shared_state.insert("production_in_progress".to_string(), serde_json::json!(false));
-                    
+                    shared_state.insert(
+                        "production_in_progress".to_string(),
+                        serde_json::json!(false),
+                    );
+
                     // Wait before retrying (10 minutes)
                     tokio::time::sleep(tokio::time::Duration::from_secs(600)).await;
                 } else {
                     info!("Production cycle completed with action: {}", action);
-                    
+
                     {
                         let mut status = app_state.current_status.write().await;
                         status.videos_produced += 1;
                         status.current_video_id = None;
                         status.current_stage = None;
                     }
-                    
+
                     // Clear state for next run
-                    shared_state.insert("production_in_progress".to_string(), serde_json::json!(false));
-                    
+                    shared_state.insert(
+                        "production_in_progress".to_string(),
+                        serde_json::json!(false),
+                    );
+
                     // Small delay before next cycle
                     tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
                 }
             }
             Ok(None) => {
                 info!("Production cycle completed successfully!");
-                
+
                 {
                     let mut status = app_state.current_status.write().await;
                     status.videos_produced += 1;
                     status.current_video_id = None;
                     status.current_stage = None;
                 }
-                
+
                 // Clear state
-                shared_state.insert("production_in_progress".to_string(), serde_json::json!(false));
-                
+                shared_state.insert(
+                    "production_in_progress".to_string(),
+                    serde_json::json!(false),
+                );
+
                 // Small delay before next cycle
                 tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
             }
             Err(e) => {
                 error!("CRITICAL: Production flow panicked! {:?}", e);
                 // Reset state
-                shared_state.insert("production_in_progress".to_string(), serde_json::json!(false));
+                shared_state.insert(
+                    "production_in_progress".to_string(),
+                    serde_json::json!(false),
+                );
                 // Wait before retrying to avoid rapid crash loop
                 tokio::time::sleep(tokio::time::Duration::from_secs(600)).await;
             }

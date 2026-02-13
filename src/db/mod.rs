@@ -1,12 +1,12 @@
 //! Database operations with SQLx
 
+pub mod accounts;
 pub mod models;
 pub mod queries;
-pub mod accounts;
 
-pub use models::{Video, VideoStatus, ScriptRecord};
-pub use queries::*;
 pub use accounts::*;
+pub use models::{ScriptRecord, Video, VideoStatus};
+pub use queries::*;
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
