@@ -23,11 +23,6 @@ download-models:
     curl -L https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json -o models/en_US-lessac-medium.onnx.json
     @echo "Models downloaded successfully."
 
-# Authenticate a new YouTube account (Rust binary - may have OAuth issues)
-auth-account name niche *args:
-    @echo "⚠️  Rust OAuth binary may have scope errors. Use 'just add-account' instead."
-    cargo run --bin auth_helper -- --name "{{name}}" --niche "{{niche}}" {{args}}
-
 # Add YouTube account using Python OAuth (works!)
 add-account name niche:
     @echo "Adding YouTube account '{{name}}' with niche '{{niche}}'..."

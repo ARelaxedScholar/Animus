@@ -26,6 +26,7 @@ __pycache__/
 # Temporary files
 *.tmp
 *.bak
+
 # Animus specific state / Secrets
 tokens.json
 credentials.json
@@ -37,3 +38,4 @@ outputs/
 *.mp4
 *.wav
 *.jsonl
+*.log

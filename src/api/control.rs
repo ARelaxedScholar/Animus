@@ -804,10 +804,8 @@ async fn list_scripts(
     .await
     {
         Ok(scripts) => {
-            let summaries: Vec<ScriptSummary> = scripts
-                .into_iter()
-                .map(ScriptSummary::from)
-                .collect();
+            let summaries: Vec<ScriptSummary> =
+                scripts.into_iter().map(ScriptSummary::from).collect();
             (StatusCode::OK, Json(ApiResponse::ok(summaries)))
         }
         Err(e) => (
@@ -826,10 +824,8 @@ async fn search_scripts(
 
     match db::search_scripts(&state.db_pool, &params.q, limit).await {
         Ok(scripts) => {
-            let summaries: Vec<ScriptSummary> = scripts
-                .into_iter()
-                .map(ScriptSummary::from)
-                .collect();
+            let summaries: Vec<ScriptSummary> =
+                scripts.into_iter().map(ScriptSummary::from).collect();
             (StatusCode::OK, Json(ApiResponse::ok(summaries)))
         }
         Err(e) => (

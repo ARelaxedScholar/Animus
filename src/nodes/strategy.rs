@@ -656,7 +656,10 @@ impl AsyncNodeLogic for StrategyLogic {
         );
 
         // Persist to database - create new video record
-        let youtube_account_id = shared.get("youtube_account_id").and_then(|v| v.as_i64()).map(|id| id as i32);
+        let youtube_account_id = shared
+            .get("youtube_account_id")
+            .and_then(|v| v.as_i64())
+            .map(|id| id as i32);
         let mut video = Video::new_production(
             video_id,
             serde_json::to_value(&topic_brief).unwrap_or(serde_json::json!(null)),

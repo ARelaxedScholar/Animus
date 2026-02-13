@@ -149,9 +149,12 @@ impl SchedulerLogic {
         let accounts = accounts::list_active_accounts(&self.db_pool)
             .await
             .map_err(|e| format!("Failed to fetch YouTube accounts: {}", e))?;
-        
+
         if accounts.is_empty() {
-            return Err("No active YouTube accounts configured. Use 'just auth-account' to add one.".to_string());
+            return Err(
+                "No active YouTube accounts configured. Use 'just auth-account' to add one."
+                    .to_string(),
+            );
         }
 
         // Try to match by niche (case-insensitive)
@@ -250,7 +253,10 @@ impl AsyncNodeLogic for SchedulerLogic {
 
                             match self.get_active_account_id("Manual").await {
                                 Ok(account_id) => {
-                                    info!("Scheduler: Using YouTube account ID {} for manual script", account_id);
+                                    info!(
+                                        "Scheduler: Using YouTube account ID {} for manual script",
+                                        account_id
+                                    );
                                     return serde_json::json!({
                                         "should_produce": true,
                                         "video_id": Uuid::new_v4().to_string(),
@@ -366,7 +372,10 @@ impl AsyncNodeLogic for SchedulerLogic {
 
             match self.get_active_account_id(&source_focus).await {
                 Ok(account_id) => {
-                    info!("Scheduler: Using YouTube account ID {} for source focus '{}'", account_id, source_focus);
+                    info!(
+                        "Scheduler: Using YouTube account ID {} for source focus '{}'",
+                        account_id, source_focus
+                    );
                     return serde_json::json!({
                         "should_produce": true,
                         "video_id": Uuid::new_v4().to_string(),

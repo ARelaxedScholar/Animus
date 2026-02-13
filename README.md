@@ -54,8 +54,7 @@ Managed via `just`:
 
 - `just dev` - Start infrastructure (Postgres, MinIO).
 - `just migrate` - Apply DB migrations.
-- `just auth-account <name> <niche>` - Rust OAuth (may have issues)
-- `just add-account <name> <niche>` - Python OAuth (recommended)
+- `just add-account <name> <niche>` - Python OAuth
 - `just list-accounts` - List all YouTube accounts
 - `just test-account` - Test YouTube credentials
 - `just run` - Run the production daemon.
@@ -70,8 +69,10 @@ Managed via `just`:
    curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
    ```
 2. **Install Docker**: `sudo pacman -S docker docker-compose`.
-3. **Clone & Develop**: `git clone <repo> && cd Animus && nix develop`.
+3. **Clone & Develop**: `git clone ssh://github.com/ARelaxedScholar/Animus && cd Animus && nix develop`.
 4. **Copy Secrets**: Manually copy your `.env` and `credentials.json` (not tracked by git).
+
+The flake.nix is equipped with a Docker image derivation, but I have yet to test it extensively.
 
 ## Architecture
 
@@ -86,4 +87,3 @@ Scheduler → Strategy → ScriptWriter → TTS → AssetCollector
 ## License
 
 MIT
-
