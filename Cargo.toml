@@ -76,6 +76,8 @@ sha2 = "0.10"
 ratatui = "0.26"
 crossterm = "0.27"
 tui-textarea = "0.4"
+imageproc = "0.26.0"
+ab_glyph = "0.2.32"
 
 [dev-dependencies]
 tokio-test = "0.4"
