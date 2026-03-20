@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::config::Settings;
 use crate::nodes::asset_collector::{AssetCollectorConfig, AssetCollectorLogic};
+use crate::nodes::fact_checker::{FactCheckerConfig, FactCheckerLogic};
 use crate::nodes::publisher::{PublisherConfig, PublisherLogic};
 use crate::nodes::scheduler::{SchedulerConfig, SchedulerLogic};
 use crate::nodes::script_writer::{ScriptWriterConfig, ScriptWriterLogic};
@@ -80,6 +81,17 @@ impl VideoProductionFlow {
             validate_with_ffprobe: settings.assets.validate_with_ffprobe,
             fallback_to_images: settings.assets.fallback_to_images,
         };
+        let fact_checker_config = FactCheckerConfig {
+            enabled: settings.fact_checker.enabled,
+            groq_api_key: settings.fact_checker.groq_api_key.clone(),
+            strict_mode: settings.fact_checker.strict_mode,
+            verify_wisdom_quotes: settings.fact_checker.verify_wisdom_quotes,
+            verify_historical: settings.fact_checker.verify_historical,
+            verify_general: settings.fact_checker.verify_general,
+            rewrite_trigger_threshold: settings.fact_checker.rewrite_trigger_threshold,
+            max_claims_per_script: settings.fact_checker.max_claims_per_script,
+            fail_open: settings.fact_checker.fail_open,
+        };
         let video_assembler_config = VideoAssemblerConfig::default();
         let thumbnail_config = ThumbnailConfig::default();
 
@@ -106,6 +118,12 @@ impl VideoProductionFlow {
         let script_writer_node = AsyncNode::new(ScriptWriterLogic::new(
             script_writer_config,
             settings.script_improvement.clone(),
+            llm_client.clone(),
+            db_pool.clone(),
+        ));
+        let fact_checker_node = AsyncNode::new(FactCheckerLogic::new(
+            fact_checker_config,
+            reqwest::Client::new(),
             llm_client.clone(),
             db_pool.clone(),
         ));
@@ -152,7 +170,8 @@ impl VideoProductionFlow {
         let video_assembler = video_assembler_node.next(Executable::Async(thumbnail));
         let asset_collector = asset_collector_node.next(Executable::Async(video_assembler));
         let tts = tts_node.next(Executable::Async(asset_collector));
-        let script_writer = script_writer_node.next(Executable::Async(tts));
+        let fact_checker = fact_checker_node.next(Executable::Async(tts));
+        let script_writer = script_writer_node.next(Executable::Async(fact_checker));
         let strategy = strategy_node.next(Executable::Async(script_writer));
 
         // Scheduler can go to strategy (default) or wait (if no production needed)

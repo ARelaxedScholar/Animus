@@ -4,6 +4,7 @@
 //! a stage in the video production pipeline.
 
 pub mod asset_collector;
+pub mod fact_checker;
 pub mod publisher;
 pub mod scheduler;
 pub mod script_writer;
@@ -15,6 +16,7 @@ pub mod video_assembler;
 
 // Re-exports
 pub use asset_collector::AssetCollectorLogic;
+pub use fact_checker::FactCheckerLogic;
 pub use publisher::PublisherLogic;
 pub use scheduler::SchedulerLogic;
 pub use script_writer::ScriptWriterLogic;
@@ -273,4 +275,24 @@ pub struct ScoredScript {
     pub candidate_index: Option<u32>,
     /// Database ID of the evaluation record (for marking as selected)
     pub evaluation_id: Option<i32>,
+}
+
+/// A verifiable claim extracted from a script
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Claim {
+    pub id: u32,
+    pub sentence: String,
+    pub claim_text: String,
+    pub status: VerificationStatus,
+    pub reason: String,
+    pub evidence: Vec<String>,
+}
+
+/// Status of claim verification
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum VerificationStatus {
+    Pending,
+    Supported,
+    Refuted,
+    NotVerifiable,
 }

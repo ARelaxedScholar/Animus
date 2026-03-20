@@ -14,6 +14,7 @@ pub struct Settings {
     pub channel: ChannelConfig,
     pub content_strategy: ContentStrategyConfig,
     pub script_improvement: ScriptImprovementConfig,
+    pub fact_checker: FactCheckerConfig,
     pub notifications: NotificationConfig,
     pub control_api_port: u16,
 }
@@ -122,6 +123,19 @@ pub struct AssetConfig {
     pub validate_with_ffprobe: bool,
     /// Whether to fallback to AI images when videos fail
     pub fallback_to_images: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FactCheckerConfig {
+    pub enabled: bool,
+    pub groq_api_key: String,
+    pub strict_mode: bool,
+    pub verify_wisdom_quotes: bool,
+    pub verify_historical: bool,
+    pub verify_general: bool,
+    pub rewrite_trigger_threshold: f64,
+    pub max_claims_per_script: u32,
+    pub fail_open: bool,
 }
 
 /// Script self-improvement loop configuration
@@ -394,6 +408,29 @@ impl Settings {
                     .ok()
                     .and_then(|v| v.parse::<i64>().ok()),
             )?
+            // Fact Checker
+            .set_default("fact_checker.enabled", true)?
+            .set_override_option(
+                "fact_checker.enabled",
+                std::env::var("FACT_CHECKER_ENABLED")
+                    .ok()
+                    .map(|v| v.to_lowercase() == "true" || v == "1"),
+            )?
+            .set_default("fact_checker.groq_api_key", "")?
+            .set_override_option("fact_checker.groq_api_key", std::env::var("GROQ_API_KEY").ok())?
+            .set_default("fact_checker.strict_mode", false)?
+            .set_override_option(
+                "fact_checker.strict_mode",
+                std::env::var("FACT_CHECKER_STRICT_MODE")
+                    .ok()
+                    .map(|v| v.to_lowercase() == "true" || v == "1"),
+            )?
+            .set_default("fact_checker.verify_wisdom_quotes", true)?
+            .set_default("fact_checker.verify_historical", true)?
+            .set_default("fact_checker.verify_general", true)?
+            .set_default("fact_checker.rewrite_trigger_threshold", 0.2)?
+            .set_default("fact_checker.max_claims_per_script", 20)?
+            .set_default("fact_checker.fail_open", true)?
             // Notifications
             .set_default("notifications.discord_webhook_url", Option::<String>::None)?
             .set_override_option(
