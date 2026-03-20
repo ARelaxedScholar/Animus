@@ -1,4 +1,3 @@
-use crate::config::FactCheckerConfig;
 use crate::nodes::{Claim, VerificationStatus, Script};
 use crate::state_keys;
 use async_trait::async_trait;
@@ -128,7 +127,7 @@ impl AsyncNodeLogic for FactCheckerLogic {
         if let Ok(claims) = claims_res {
             let mut refuted_sentences = Vec::new();
             
-            for mut claim in claims {
+            for claim in claims {
                 let evidence = self.search_evidence(&claim.claim_text).await.unwrap_or_default();
                 let status: VerificationStatus = self.verify_claim(&claim, &evidence).await.unwrap_or(VerificationStatus::NotVerifiable);
 
