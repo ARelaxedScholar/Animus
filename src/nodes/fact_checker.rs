@@ -1,4 +1,5 @@
-use crate::nodes::{Claim, VerificationStatus, Script, ScriptSection};
+use crate::config::FactCheckerConfig;
+use crate::nodes::{Claim, VerificationStatus, Script};
 use crate::state_keys;
 use async_trait::async_trait;
 use orichalcum::llm::{Client as LlmClient, Enabled, Providers};
@@ -9,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-pub use crate::config::settings::FactCheckerConfig;
+pub use crate::config::FactCheckerConfig;
 
 pub struct FactCheckerLogic {
     config: FactCheckerConfig,
