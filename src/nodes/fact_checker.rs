@@ -1,5 +1,4 @@
-use crate::config::FactCheckerConfig;
-use crate::nodes::mod::{Claim, VerificationStatus, Script, ScriptSection};
+use crate::nodes::{Claim, VerificationStatus, Script, ScriptSection};
 use crate::state_keys;
 use async_trait::async_trait;
 use orichalcum::llm::{Client as LlmClient, Enabled, Providers};
@@ -9,6 +8,8 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
+
+pub use crate::config::settings::FactCheckerConfig;
 
 pub struct FactCheckerLogic {
     config: FactCheckerConfig,
@@ -128,8 +129,8 @@ impl AsyncNodeLogic for FactCheckerLogic {
             
             for mut claim in claims {
                 let evidence = self.search_evidence(&claim.claim_text).await.unwrap_or_default();
-                let status = self.verify_claim(&claim, &evidence).await.unwrap_or(VerificationStatus::NotVerifiable);
-                
+                let status: VerificationStatus = self.verify_claim(&claim, &evidence).await.unwrap_or(VerificationStatus::NotVerifiable);
+
                 if status == VerificationStatus::Refuted || (status == VerificationStatus::NotVerifiable && !self.config.fail_open) {
                     refuted_sentences.push(claim.sentence.clone());
                 }
@@ -160,6 +161,7 @@ impl AsyncNodeLogic for FactCheckerLogic {
         Box::new(Self {
             config: self.config.clone(),
             http_client: self.http_client.clone(),
+            llm_client: self.llm_client.clone(),
             db_pool: self.db_pool.clone(),
         })
     }
