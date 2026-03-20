@@ -32,22 +32,6 @@ impl FactCheckerLogic {
         }
     }
 
-
-impl FactCheckerLogic {
-    pub fn new(
-        config: FactCheckerConfig,
-        http_client: reqwest::Client,
-        llm_client: Arc<LlmClient<Providers<orichalcum::llm::Disabled, Enabled, Enabled>>>,
-        db_pool: Arc<PgPool>,
-    ) -> Self {
-        Self {
-            config,
-            http_client,
-            llm_client,
-            db_pool,
-        }
-    }
-
     async fn extract_claims(&self, script_text: &str) -> Result<Vec<Claim>, String> {
         let url = "https://api.groq.com/openai/v1/chat/completions";
         let body = json!({
