@@ -11,9 +11,22 @@ use futures::FutureExt;
 use orichalcum::llm::Client as LlmClient;
 use orichalcum::NodeValue;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
+
+fn resolve_api_url_file_path() -> PathBuf {
+    if let Ok(path) = std::env::var("ANIMUS_API_URL_FILE") {
+        return PathBuf::from(path);
+    }
+
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        return PathBuf::from(runtime_dir).join("animus_api_url");
+    }
+
+    std::env::temp_dir().join("animus_api_url")
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -175,20 +188,72 @@ async fn main() -> anyhow::Result<()> {
     // Start the control API server
     let api_router = create_router(app_state.clone());
     let api_port = settings.control_api_port;
+    let api_url_file_path = resolve_api_url_file_path();
     let api_handle = tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", api_port))
-            .await
-            .expect("Failed to bind API port");
-        info!("Control API listening on http://0.0.0.0:{}", api_port);
-        axum::serve(listener, api_router.into_make_service())
-            .await
-            .ok()
+        let requested_addr = format!("0.0.0.0:{}", api_port);
+        let listener = match tokio::net::TcpListener::bind(&requested_addr).await {
+            Ok(listener) => listener,
+            Err(e) => {
+                warn!(
+                    "Control API failed to bind on {}: {}; falling back to an available port",
+                    requested_addr, e
+                );
+
+                match tokio::net::TcpListener::bind("0.0.0.0:0").await {
+                    Ok(listener) => listener,
+                    Err(fallback_error) => {
+                        error!(
+                            "Control API failed to bind fallback address 0.0.0.0:0: {}",
+                            fallback_error
+                        );
+                        return;
+                    }
+                }
+            }
+        };
+
+        match listener.local_addr() {
+            Ok(local_addr) => {
+                let discovered_url = format!("http://127.0.0.1:{}", local_addr.port());
+                info!("Control API listening on http://{}", local_addr);
+
+                if let Some(parent_dir) = api_url_file_path.parent() {
+                    if parent_dir.as_os_str().is_empty() {
+                        // Relative file in current directory has no parent to create.
+                    } else if let Err(e) = tokio::fs::create_dir_all(parent_dir).await {
+                        warn!(
+                            "Failed to create API URL discovery directory {}: {}",
+                            parent_dir.display(),
+                            e
+                        );
+                    }
+                }
+
+                match tokio::fs::write(&api_url_file_path, format!("{}\n", discovered_url)).await {
+                    Ok(()) => info!(
+                        "Wrote discovered API URL {} to {}",
+                        discovered_url,
+                        api_url_file_path.display()
+                    ),
+                    Err(e) => warn!(
+                        "Failed to write discovered API URL to {}: {}",
+                        api_url_file_path.display(),
+                        e
+                    ),
+                }
+            }
+            Err(e) => warn!("Control API bound but failed to read local address: {}", e),
+        }
+
+        if let Err(e) = axum::serve(listener, api_router.into_make_service()).await {
+            error!("Control API server exited with error: {}", e);
+        }
     });
 
     info!("");
     info!("🚀 Daemon starting main loop");
     info!(
-        "   Control API: http://localhost:{}",
+        "   Control API requested: http://localhost:{} (fallback to any free port if unavailable)",
         settings.control_api_port
     );
     info!("   POST /pause    - Pause production");

@@ -12,6 +12,7 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -23,12 +24,48 @@ enum UiMsg {
     RetryFinished(Result<String, String>),
 }
 
+fn resolve_api_url_file_path() -> PathBuf {
+    if let Ok(path) = std::env::var("ANIMUS_API_URL_FILE") {
+        return PathBuf::from(path);
+    }
+
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        return PathBuf::from(runtime_dir).join("animus_api_url");
+    }
+
+    std::env::temp_dir().join("animus_api_url")
+}
+
+fn resolve_api_url() -> String {
+    if let Ok(url) = std::env::var("ANIMUS_API_URL") {
+        let url = url.trim();
+        if !url.is_empty() {
+            return url.to_string();
+        }
+    }
+
+    if let Ok(url) = std::env::var("ANIMUS_SERVER_URL") {
+        let url = url.trim();
+        if !url.is_empty() {
+            return url.to_string();
+        }
+    }
+
+    if let Ok(url) = std::fs::read_to_string(resolve_api_url_file_path()) {
+        let url = url.trim();
+        if !url.is_empty() {
+            return url.to_string();
+        }
+    }
+
+    "http://localhost:8080".to_string()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ... (keep preamble same)
     dotenvy::dotenv().ok();
-    let api_url =
-        std::env::var("ANIMUS_API_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let api_url = resolve_api_url();
     let api_key = std::env::var("ANIMUS_API_KEY").unwrap_or_else(|_| "animus_dev_key".to_string());
 
     enable_raw_mode()?;

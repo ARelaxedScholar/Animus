@@ -15,11 +15,41 @@ import sys
 import os
 import json
 import argparse
+import tempfile
 from dotenv import load_dotenv
 
 load_dotenv()
 
-SERVER_URL = os.getenv("ANIMUS_SERVER_URL", "http://localhost:8080")
+def _resolve_api_url_file_path():
+    configured = os.getenv("ANIMUS_API_URL_FILE")
+    if configured is not None:
+        return configured
+
+    runtime_dir = os.getenv("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        return os.path.join(runtime_dir, "animus_api_url")
+
+    return os.path.join(tempfile.gettempdir(), "animus_api_url")
+
+
+def _resolve_server_url():
+    for var_name in ("ANIMUS_SERVER_URL", "ANIMUS_API_URL"):
+        value = os.getenv(var_name)
+        if value and value.strip():
+            return value.strip()
+
+    try:
+        with open(_resolve_api_url_file_path(), "r", encoding="utf-8") as f:
+            value = f.read().strip()
+            if value:
+                return value
+    except OSError:
+        pass
+
+    return "http://localhost:8080"
+
+
+SERVER_URL = _resolve_server_url()
 API_KEY = os.getenv("ANIMUS_API_KEY", "animus_dev_key")
 
 headers = {
