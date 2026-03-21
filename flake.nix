@@ -29,20 +29,49 @@
           ];
         };
 
+        pyproject = builtins.fromTOML (builtins.readFile ./pyproject.toml);
+        pyprojectDeps = pyproject.project.dependencies or [ ];
+
+        normalizePythonDepName =
+          dep:
+          let
+            depMatch = builtins.match "^[[:space:]]*([A-Za-z0-9._-]+).*" dep;
+            depName = if depMatch == null then dep else builtins.elemAt depMatch 0;
+            normalizedName = builtins.replaceStrings [ "-" "." ] [ "_" "_" ] (pkgs.lib.strings.toLower depName);
+          in
+          if normalizedName == "psycopg2_binary" then "psycopg2" else normalizedName;
+
+        resolvePythonPackageAttr =
+          ps: normalizedName:
+          let
+            candidates = [
+              (builtins.replaceStrings [ "_" ] [ "-" ] normalizedName)
+              normalizedName
+            ];
+            resolved = builtins.filter (name: builtins.hasAttr name ps) candidates;
+          in
+          if resolved == [ ] then null else builtins.elemAt resolved 0;
+
         # Python environment for MoviePy bridge
         pythonEnv = pkgs.python3.withPackages (
-          ps: with ps; [
-            moviepy
-            pillow
-            numpy
-            requests
-            google-auth-oauthlib
-            google-auth-httplib2
-            google-api-python-client
-            psycopg2
-            python-dotenv
-            psutil
-          ]
+          ps:
+          let
+            pyprojectRuntimeDeps = builtins.map normalizePythonDepName pyprojectDeps;
+            extraRuntimeDeps = builtins.map normalizePythonDepName [
+              "moviepy"
+              "pillow"
+              "numpy"
+              "google-auth-oauthlib"
+              "google-auth-httplib2"
+              "psutil"
+            ];
+            allRuntimeDepNames = pkgs.lib.lists.unique (pyprojectRuntimeDeps ++ extraRuntimeDeps);
+            resolvedRuntimeDepNames = builtins.filter (name: name != null) (
+              builtins.map (resolvePythonPackageAttr ps) allRuntimeDepNames
+            );
+            availableRuntimeDepNames = pkgs.lib.lists.unique resolvedRuntimeDepNames;
+          in
+          builtins.map (name: builtins.getAttr name ps) availableRuntimeDepNames
         );
 
         # Animus package
@@ -143,6 +172,7 @@
 
             # Python and tools
             pythonEnv
+            uv
             ffmpeg
             imagemagick
             piper-tts
@@ -160,6 +190,9 @@
           ];
 
           shellHook = ''
+            export UV_PYTHON=${pythonEnv}/bin/python3
+            export UV_PYTHON_DOWNLOADS=never
+
             echo "🎬 Animus Development Environment"
             echo "   Rust: $(rustc --version)"
             echo "   Python: $(python --version)"
