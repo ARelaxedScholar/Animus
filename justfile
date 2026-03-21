@@ -3,12 +3,12 @@ set dotenv-load
 
 # Start development services (PostgreSQL + MinIO)
 dev:
-    docker-compose up -d
+    docker compose up -d
     @echo "Services started. PostgreSQL on :5432, MinIO on :9000"
 
 # Stop development services
 dev-down:
-    docker-compose down
+    docker compose down
 
 # Run database migrations
 migrate:
@@ -30,12 +30,12 @@ add-account name niche:
 
 # List YouTube accounts in database
 list-accounts:
-    @docker-compose exec postgres psql -U animus -d animus -c "SELECT id, name, niche, is_active FROM youtube_accounts ORDER BY id;"
+    @docker compose exec postgres psql -U animus -d animus -c "SELECT id, name, niche, is_active FROM youtube_accounts ORDER BY id;"
 
 # Update an existing account's refresh token (manual)
 update-account-refresh name refresh_token:
     @echo "Updating refresh token for account '{{name}}'..."
-    @docker-compose exec postgres psql -U animus -d animus -c "UPDATE youtube_accounts SET refresh_token = '{{refresh_token}}', updated_at = NOW() WHERE name = '{{name}}';"
+    @docker compose exec postgres psql -U animus -d animus -c "UPDATE youtube_accounts SET refresh_token = '{{refresh_token}}', updated_at = NOW() WHERE name = '{{name}}';"
     @echo "Done."
 
 # Test YouTube account credentials from .env

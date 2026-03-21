@@ -59,10 +59,10 @@ def get_refresh_token(client_id, client_secret):
         
         # Use console flow with browser opening
         credentials = flow.run_local_server(
-            port=0,
+            port=8090,
             authorization_prompt_message='Please visit this URL to authorize the app: {url}',
             success_message='The auth flow is complete; you may close this window.',
-            open_browser=True
+            open_browser=False
         )
         
         if not credentials.refresh_token:
